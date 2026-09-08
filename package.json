@@ -28,6 +28,10 @@
         {
           "id": "drift.sidebar",
           "name": "Drift"
+        },
+        {
+          "id": "drift.findings",
+          "name": "Findings"
         }
       ]
     },
@@ -35,8 +39,22 @@
       {
         "command": "drift.installClaudeHooks",
         "title": "Drift: Configure Claude Code Hooks"
+      },
+      {
+        "command": "drift.analyzeSession",
+        "title": "Drift: Analyze Session",
+        "icon": "$(search)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "drift.analyzeSession",
+          "when": "view == drift.findings",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Drift",
       "properties": {

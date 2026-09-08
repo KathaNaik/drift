@@ -33,6 +33,8 @@ export interface DriftStorage {
   ensureSession(sessionId: string, createdAt?: number): DriftSession;
   insertRawEvent(sessionId: string, payload: unknown, timestamp?: number): DriftRawEvent;
   getSession(sessionId: string): DriftSessionWithEvents | undefined;
+  /** Every known session, most recently created first (ties broken by id for determinism). */
+  listSessions(): DriftSession[];
   /** Whether a trace for this session has already been exported successfully. */
   hasExportedTrace(sessionId: string): boolean;
   /** Records that a trace for this session was exported successfully. */
@@ -132,6 +134,7 @@ export function openStorage(dbFilePath: string): DriftStorage {
     "INSERT INTO raw_events (session_id, timestamp, payload) VALUES (?, ?, ?)"
   );
   const getSessionStmt = db.prepare("SELECT id, created_at FROM sessions WHERE id = ?");
+  const listSessionsStmt = db.prepare("SELECT id, created_at FROM sessions ORDER BY created_at DESC, id ASC");
   const getEventsStmt = db.prepare(
     "SELECT id, session_id, timestamp, payload FROM raw_events WHERE session_id = ? ORDER BY timestamp ASC, id ASC"
   );
@@ -190,6 +193,11 @@ export function openStorage(dbFilePath: string): DriftStorage {
           payload: JSON.parse(e.payload),
         })),
       };
+    },
+
+    listSessions(): DriftSession[] {
+      const rows = listSessionsStmt.all() as unknown as SessionRow[];
+      return rows.map((row) => ({ id: row.id, createdAt: row.created_at }));
     },
 
     hasExportedTrace(sessionId: string): boolean {

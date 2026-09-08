@@ -91,6 +91,30 @@ suite("storage (M3)", () => {
     reopened.close();
   });
 
+  test("listSessions returns every known session, most recently created first (M11A)", () => {
+    const storage = openStorage(tempDbPath());
+    const a = storage.createSession(100);
+    const b = storage.createSession(300);
+    const c = storage.createSession(200);
+
+    const sessions = storage.listSessions();
+    assert.deepStrictEqual(
+      sessions.map((s) => s.id),
+      [b.id, c.id, a.id]
+    );
+    assert.deepStrictEqual(
+      sessions.map((s) => s.createdAt),
+      [300, 200, 100]
+    );
+    storage.close();
+  });
+
+  test("listSessions returns an empty array when no sessions exist", () => {
+    const storage = openStorage(tempDbPath());
+    assert.deepStrictEqual(storage.listSessions(), []);
+    storage.close();
+  });
+
   test("returns undefined for an unknown session id", () => {
     const storage = openStorage(tempDbPath());
     assert.strictEqual(storage.getSession("does-not-exist"), undefined);
