@@ -49,7 +49,8 @@ function decodeAttributeValue(value: unknown): string | number | boolean | undef
   return undefined;
 }
 
-function attributesToMap(attributes: unknown): Record<string, unknown> {
+/** Exposed for modelUsageCorrelation.ts, so it can read attributes off a stored raw telemetry payload without duplicating this decoding logic. */
+export function attributesToMap(attributes: unknown): Record<string, unknown> {
   const map: Record<string, unknown> = {};
   for (const attr of asArray(attributes)) {
     if (isPlainObject(attr) && typeof attr.key === "string") {
