@@ -6,7 +6,7 @@ import { spawn, ChildProcess, execSync } from "child_process";
 import { createLocalModelRuntime, LocalModelRuntime } from "../../src/localModelRuntime";
 import { openStorage } from "../../src/storage";
 
-const MODEL_PATH = path.join(process.cwd(), "models", "gemma-3-1b-it-Q4_K_M.gguf");
+const MODEL_PATH = path.join(process.cwd(), "models", "gemma-3-4b-it-IQ4_XS.gguf");
 const MODEL_PRESENT = fs.existsSync(MODEL_PATH);
 
 function tempDbPath(): string {
@@ -65,13 +65,13 @@ suite("localModelRuntime (M9A)", function () {
   // constructs Mocha with no timeout override) -- every test here sets its own.
 
   if (!MODEL_PRESENT) {
-    test("SKIPPED: models/gemma-3-1b-it-Q4_K_M.gguf is not present in this checkout", () => {
-      assert.ok(true, "the real Gemma 3 1B GGUF is a local, gitignored asset (see .gitignore) and is not part of the repository");
+    test("SKIPPED: models/gemma-3-4b-it-IQ4_XS.gguf is not present in this checkout", () => {
+      assert.ok(true, "the real Gemma 3 4B GGUF is a local, gitignored asset (see .gitignore) and is not part of the repository");
     });
     return;
   }
 
-  suite("real inference against Gemma 3 1B (spawned server)", () => {
+  suite("real inference against Gemma 3 4B (spawned server)", () => {
     let runtime: LocalModelRuntime;
 
     suiteSetup(async function () {
@@ -87,7 +87,7 @@ suite("localModelRuntime (M9A)", function () {
       await runtime.close();
     });
 
-    test("local llama.cpp inference succeeds against Gemma 3 1B and returns real generated text", async function () {
+    test("local llama.cpp inference succeeds against Gemma 3 4B and returns real generated text", async function () {
       this.timeout(30000);
       const result = await runtime.infer("Reply with exactly the single word: PINEAPPLE");
 

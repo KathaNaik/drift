@@ -51,9 +51,17 @@ export interface InferenceResult {
   record: InferenceRecord;
 }
 
+/** Per-call generation constraints, layered onto the runtime's own config. */
+export interface InferOptions {
+  /** Hard cap on generated tokens (llama-server's max_tokens), enforced server-side -- not merely requested via prompt text. Required by callers that need runaway generation structurally bounded, e.g. a JSON-only classifier. */
+  maxTokens?: number;
+  /** Forces the response to conform to this JSON Schema via llama-server's grammar-constrained decoding (OpenAI-compatible response_format). The schema itself is passed through untouched -- this module doesn't interpret it. */
+  jsonSchema?: { name: string; schema: Record<string, unknown> };
+}
+
 export interface LocalModelRuntime {
   /** Submits one structured prompt and returns generated text, bounded by the configured timeout. Never throws. */
-  infer(prompt: string): Promise<InferenceResult>;
+  infer(prompt: string, options?: InferOptions): Promise<InferenceResult>;
   /** Stops a server this runtime itself spawned. A safe no-op if it only ever connected to an externally-managed server, or never started one. */
   close(): Promise<void>;
 }
@@ -287,7 +295,7 @@ class LocalModelRuntimeImpl implements LocalModelRuntime {
     return this.startPromise;
   }
 
-  async infer(prompt: string): Promise<InferenceResult> {
+  async infer(prompt: string, options?: InferOptions): Promise<InferenceResult> {
     const startedAt = Date.now();
     const deadline = startedAt + this.timeoutMs;
     const fail = (error: string, inputTokens?: number, outputTokens?: number): InferenceResult => ({
@@ -312,7 +320,12 @@ class LocalModelRuntimeImpl implements LocalModelRuntime {
         const response = await fetch(`${server.baseUrl}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: prompt }], temperature: 0 }),
+          body: JSON.stringify({
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0,
+            ...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
+            ...(options?.jsonSchema !== undefined ? { response_format: { type: "json_schema", json_schema: options.jsonSchema } } : {}),
+          }),
           signal: controller.signal,
         });
 
