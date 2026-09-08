@@ -110,9 +110,11 @@ suite("Drift Findings view (M11A)", () => {
   });
 
   test("before any analysis, the Findings view shows only a placeholder -- no automatic analysis on activation", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift")!;
-    const exports = await ext.activate();
-    const provider: DriftFindingsProvider = exports.findingsProvider;
+    // A fresh instance, independent of the shared extension singleton's
+    // state (which other suites in this same extension-host process may
+    // have already populated by the time this runs) -- this proves the
+    // class itself never auto-populates an analysis on construction.
+    const provider = new DriftFindingsProvider();
 
     const children = provider.getChildren();
     assert.strictEqual(children.length, 1);

@@ -25,14 +25,18 @@ import { buildTrajectory } from "./trajectory";
 import { SessionAnalysis, SessionAnalysisWindow } from "./sessionAnalysisPipeline";
 import { DecisionState, DeterministicEvidence } from "./findingDecisionPolicy";
 
-const STATE_LABELS: Record<DecisionState, string> = {
+// Exported for reuse by trajectoryInspectorProvider.ts, which overlays the
+// exact same state/evidence rendering rules onto individual trajectory
+// steps rather than whole analysis windows.
+
+export const STATE_LABELS: Record<DecisionState, string> = {
   observe: "Observe",
   finding: "Finding",
   redirect_candidate: "Redirect Candidate",
 };
 
 /** Distinct icon per state so Observe/Finding/Redirect Candidate are visually distinguishable at a glance, not just by label text. Redirect Candidate is deliberately not given any action affordance here -- it is informational only. */
-const STATE_ICONS: Record<DecisionState, vscode.ThemeIcon> = {
+export const STATE_ICONS: Record<DecisionState, vscode.ThemeIcon> = {
   observe: new vscode.ThemeIcon("eye"),
   finding: new vscode.ThemeIcon("warning", new vscode.ThemeColor("charts.yellow")),
   redirect_candidate: new vscode.ThemeIcon("alert", new vscode.ThemeColor("charts.red")),
@@ -47,7 +51,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   subagent_overlap: "Subagent overlap",
 };
 
-function typeLabel(type: string): string {
+export function typeLabel(type: string): string {
   return FINDING_TYPE_LABELS[type] ?? type;
 }
 
@@ -60,7 +64,7 @@ function buildTitle(window: SessionAnalysisWindow): string {
 }
 
 /** Renders one evidence value compactly -- truncated strings, flattened one level of nested object, never a full JSON dump. */
-function formatEvidenceValue(value: unknown): string {
+export function formatEvidenceValue(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) return `[${value.length} item(s)]`;
   if (typeof value === "object") {
@@ -72,7 +76,7 @@ function formatEvidenceValue(value: unknown): string {
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
-function formatEvidenceEntry(evidence: Record<string, unknown>): string {
+export function formatEvidenceEntry(evidence: Record<string, unknown>): string {
   return Object.entries(evidence)
     .map(([key, value]) => `${key}: ${formatEvidenceValue(value)}`)
     .join(", ");
@@ -89,6 +93,8 @@ type FindingsTreeNode =
   | { kind: "reasonCodes"; window: SessionAnalysisWindow };
 
 export const SHOW_FINDING_STEPS_COMMAND = "drift.showFindingSteps";
+/** Registered by extension.ts; also the exact command name trajectoryInspectorProvider.ts exports as OPEN_INSPECTOR_AT_STEP_COMMAND. Kept as an independent literal here (rather than an import) to avoid a circular module dependency between the two view providers. */
+const OPEN_INSPECTOR_AT_STEP_COMMAND = "drift.openInspectorAtStep";
 
 /**
  * A compact, human-readable (never raw-JSON) line per involved trajectory
@@ -142,6 +148,9 @@ export class DriftFindingsProvider implements vscode.TreeDataProvider<FindingsTr
         item.iconPath = STATE_ICONS[window.decision.state];
         item.description = `${window.stepIndexes.length} step(s)`;
         item.contextValue = `drift.finding.${window.decision.state}`;
+        // Selecting a finding opens/focuses the Trajectory Inspector (M11B)
+        // at the first trajectory step this finding's evidence involves.
+        item.command = { command: OPEN_INSPECTOR_AT_STEP_COMMAND, title: "Open in Trajectory Inspector", arguments: [node.sessionId, window.stepIndexes[0]] };
         return item;
       }
 

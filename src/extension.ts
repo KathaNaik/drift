@@ -2,14 +2,17 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { DriftSidebarProvider } from "./driftSidebarProvider";
 import { DriftFindingsProvider, SHOW_FINDING_STEPS_COMMAND, buildStepDetailText } from "./findingsViewProvider";
+import { DriftTrajectoryInspectorProvider, InspectorNode, OPEN_INSPECTOR_AT_STEP_COMMAND } from "./trajectoryInspectorProvider";
+import { DriftSessionReportProvider } from "./sessionReportProvider";
+import { buildSessionReport } from "./sessionReport";
 import { startRuntime, checkHealth, DriftRuntime } from "./runtime";
-import { openStorage, DriftStorage, DriftSession } from "./storage";
+import { openStorage, DriftStorage, DriftSession, DriftRawEvent, DriftSessionWithEvents } from "./storage";
 import { installClaudeHooks } from "./hookInstaller";
 import { exportSessionOnEnd } from "./sessionExportPipeline";
 import { OtlpExportConfig } from "./otlpExporter";
 import { normalizeRawEvent } from "./normalizedEvent";
 import { buildTrajectory } from "./trajectory";
-import { attributeUsageToTrajectory } from "./trajectoryUsageAttribution";
+import { attributeUsageToTrajectory, TrajectoryUsage } from "./trajectoryUsageAttribution";
 import { analyzeSession, SessionAnalysis, SessionAnalysisWindow } from "./sessionAnalysisPipeline";
 import { LocalModelRuntime, createLocalModelRuntime } from "./localModelRuntime";
 
@@ -39,12 +42,21 @@ const defaultRuntimeStartDeps: RuntimeStartDeps = {
 let runtime: DriftRuntime | undefined;
 let sidebarProvider: DriftSidebarProvider | undefined;
 let findingsProvider: DriftFindingsProvider | undefined;
+let inspectorProvider: DriftTrajectoryInspectorProvider | undefined;
+let inspectorTreeView: vscode.TreeView<InspectorNode> | undefined;
+let reportProvider: DriftSessionReportProvider | undefined;
 let storage: DriftStorage | undefined;
 let extensionUri: vscode.Uri | undefined;
 
 /** The packaged local model's fixed location relative to the extension itself -- see M9A/CLAUDE.md: semantic analysis only ever uses this local, gitignored asset, never a cloud LLM. */
 function resolveModelPath(): string {
   return path.join(extensionUri!.fsPath, "models", "gemma-3-4b-it-IQ4_XS.gguf");
+}
+
+/** The same "normalize -> buildTrajectory -> attributeUsageToTrajectory" pipeline used everywhere else in this codebase, factored here since both Analyze Session and Inspect Session need a fresh, exact-order trajectory for a session. Pure -- reads storage, never writes it. */
+function buildTrajectoryUsageFor(sessionId: string, sessionData: DriftSessionWithEvents): TrajectoryUsage {
+  const trajectory = buildTrajectory(sessionId, sessionData.events.map(normalizeRawEvent));
+  return attributeUsageToTrajectory(trajectory, storage!);
 }
 
 /**
@@ -90,25 +102,39 @@ export async function runInstallClaudeHooksCommand(): Promise<void> {
   vscode.window.showInformationMessage("Drift: Claude Code hooks configured for this workspace.");
 }
 
-export interface AnalyzeSessionDeps {
+/** Shared by both Analyze Session and Inspect Session -- both start from "which stored Claude Code session?" and nothing else. */
+export interface SessionPickerDeps {
   listSessions: (storage: DriftStorage) => DriftSession[];
-  /** Resolved to the sessionId to analyze, or undefined if the user cancelled. */
+  /** Resolved to the sessionId to use, or undefined if the user cancelled. */
   pickSessionId: (sessions: DriftSession[]) => Promise<string | undefined>;
-  createRuntime: () => LocalModelRuntime;
 }
 
-const defaultAnalyzeSessionDeps: AnalyzeSessionDeps = {
+const defaultSessionPickerDeps: SessionPickerDeps = {
   listSessions: (storage) => storage.listSessions(),
   pickSessionId: async (sessions) => {
     if (sessions.length === 1) return sessions[0].id;
     const picked = await vscode.window.showQuickPick(
       sessions.map((s) => ({ label: s.id, description: new Date(s.createdAt).toLocaleString() })),
-      { placeHolder: "Select a Claude Code session to analyze" }
+      { placeHolder: "Select a Claude Code session" }
     );
     return picked?.label;
   },
+};
+
+export interface AnalyzeSessionDeps extends SessionPickerDeps {
+  createRuntime: () => LocalModelRuntime;
+}
+
+const defaultAnalyzeSessionDeps: AnalyzeSessionDeps = {
+  ...defaultSessionPickerDeps,
   createRuntime: () => createLocalModelRuntime({ modelPath: resolveModelPath(), timeoutMs: 60000 }),
 };
+
+export type InspectSessionDeps = SessionPickerDeps;
+const defaultInspectSessionDeps: InspectSessionDeps = defaultSessionPickerDeps;
+
+export type ViewSessionReportDeps = SessionPickerDeps;
+const defaultViewSessionReportDeps: ViewSessionReportDeps = defaultSessionPickerDeps;
 
 /**
  * Runs one on-demand M10B session analysis and renders it in the Findings
@@ -140,8 +166,7 @@ export async function runAnalyzeSessionCommand(deps: AnalyzeSessionDeps = defaul
     return undefined;
   }
 
-  const trajectory = buildTrajectory(sessionId, sessionData.events.map(normalizeRawEvent));
-  const trajectoryUsage = attributeUsageToTrajectory(trajectory, storage);
+  const trajectoryUsage = buildTrajectoryUsageFor(sessionId, sessionData);
 
   const modelRuntime = deps.createRuntime();
   let result: SessionAnalysis;
@@ -168,6 +193,122 @@ export async function runShowFindingStepsCommand(sessionId: string, window: Sess
   await vscode.window.showTextDocument(doc, { preview: true });
 }
 
+/**
+ * Loads one session's trajectory (fresh, exact-order, never cached) into
+ * the Trajectory Inspector, overlaying the most recently manually-triggered
+ * analysis ONLY when it belongs to this exact session -- a leftover
+ * analysis for a different session is never misapplied. Never touches the
+ * local model: this is a pure storage-read + presentation step, so opening
+ * or reopening the inspector causes zero additional Gemma calls. Returns
+ * false (with an error message shown) when the session can no longer be
+ * loaded.
+ */
+async function openInspectorForSession(sessionId: string): Promise<boolean> {
+  if (!storage || !inspectorProvider) return false;
+
+  const sessionData = storage.getSession(sessionId);
+  if (!sessionData) {
+    vscode.window.showErrorMessage(`Drift: session ${sessionId} could not be loaded.`);
+    return false;
+  }
+
+  const rawEventsById = new Map<number, DriftRawEvent>();
+  for (const rawEvent of sessionData.events) rawEventsById.set(rawEvent.id, rawEvent);
+
+  const trajectoryUsage = buildTrajectoryUsageFor(sessionId, sessionData);
+  const currentAnalysis = findingsProvider?.getCurrentAnalysis();
+  const overlay = currentAnalysis && currentAnalysis.sessionId === sessionId ? currentAnalysis : undefined;
+
+  inspectorProvider.setData(sessionId, trajectoryUsage, rawEventsById, overlay);
+  return true;
+}
+
+/**
+ * Opens the Trajectory Inspector for a user-picked stored session. Renders
+ * the raw trajectory even when no analysis has ever been run for it (per
+ * M11B: "If no analysis exists yet, show the raw trajectory without
+ * findings") -- an overlay is applied opportunistically, never required.
+ */
+export async function runInspectSessionCommand(deps: InspectSessionDeps = defaultInspectSessionDeps): Promise<void> {
+  if (!storage) {
+    vscode.window.showErrorMessage("Drift: storage is not open yet.");
+    return;
+  }
+
+  const sessions = deps.listSessions(storage);
+  if (sessions.length === 0) {
+    vscode.window.showInformationMessage("Drift: no Claude Code sessions have been recorded yet.");
+    return;
+  }
+
+  const sessionId = await deps.pickSessionId(sessions);
+  if (!sessionId) return;
+
+  const opened = await openInspectorForSession(sessionId);
+  if (opened) {
+    await vscode.commands.executeCommand("drift.inspector.focus");
+  }
+}
+
+/**
+ * Selecting a finding in the Findings view opens/focuses the Trajectory
+ * Inspector at that finding's first involved trajectory step (M11B).
+ */
+export async function runOpenInspectorAtStepCommand(sessionId: string, stepIndex: number): Promise<void> {
+  const opened = await openInspectorForSession(sessionId);
+  if (!opened || !inspectorProvider) return;
+
+  const rootNodes = inspectorProvider.getChildren();
+  const target = rootNodes.find((n): n is Extract<InspectorNode, { kind: "step" }> => n.kind === "step" && n.step.index === stepIndex);
+
+  if (target && inspectorTreeView) {
+    await inspectorTreeView.reveal(target, { select: true, focus: true });
+  } else {
+    await vscode.commands.executeCommand("drift.inspector.focus");
+  }
+}
+
+/**
+ * Builds and shows the M11C end-of-session report for a user-picked stored
+ * session. Purely reads storage and whatever analysis the Findings view most
+ * recently produced for this exact session (never a mismatched leftover) --
+ * it never touches the local model, so viewing a report causes zero
+ * additional Gemma calls, and it never writes anything back to storage.
+ * Renders a full session/usage/outcome report even when no M10B analysis
+ * has ever been run for this session, per M11C's own requirement.
+ */
+export async function runViewSessionReportCommand(deps: ViewSessionReportDeps = defaultViewSessionReportDeps): Promise<void> {
+  if (!storage || !reportProvider) {
+    vscode.window.showErrorMessage("Drift: storage is not open yet.");
+    return;
+  }
+
+  const sessions = deps.listSessions(storage);
+  if (sessions.length === 0) {
+    vscode.window.showInformationMessage("Drift: no Claude Code sessions have been recorded yet.");
+    return;
+  }
+
+  const sessionId = await deps.pickSessionId(sessions);
+  if (!sessionId) return;
+
+  const sessionData = storage.getSession(sessionId);
+  if (!sessionData) {
+    vscode.window.showErrorMessage(`Drift: session ${sessionId} could not be loaded.`);
+    return;
+  }
+
+  const rawEventsById = new Map<number, DriftRawEvent>();
+  for (const rawEvent of sessionData.events) rawEventsById.set(rawEvent.id, rawEvent);
+
+  const trajectoryUsage = buildTrajectoryUsageFor(sessionId, sessionData);
+  const currentAnalysis = findingsProvider?.getCurrentAnalysis();
+
+  const report = buildSessionReport(trajectoryUsage, rawEventsById, currentAnalysis);
+  reportProvider.setReport(report);
+  await vscode.commands.executeCommand("drift.report.focus");
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   extensionUri = context.extensionUri;
   const provider = new DriftSidebarProvider();
@@ -184,6 +325,21 @@ export async function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(findingsTreeView);
 
+  const trajectoryInspectorProvider = new DriftTrajectoryInspectorProvider();
+  inspectorProvider = trajectoryInspectorProvider;
+  const inspectorView = vscode.window.createTreeView("drift.inspector", {
+    treeDataProvider: trajectoryInspectorProvider,
+  });
+  inspectorTreeView = inspectorView;
+  context.subscriptions.push(inspectorView);
+
+  const sessionReportProvider = new DriftSessionReportProvider();
+  reportProvider = sessionReportProvider;
+  const reportView = vscode.window.createTreeView("drift.report", {
+    treeDataProvider: sessionReportProvider,
+  });
+  context.subscriptions.push(reportView);
+
   const installHooksCommand = vscode.commands.registerCommand(
     "drift.installClaudeHooks",
     runInstallClaudeHooksCommand
@@ -196,6 +352,15 @@ export async function activate(context: vscode.ExtensionContext) {
   const showFindingStepsCommand = vscode.commands.registerCommand(SHOW_FINDING_STEPS_COMMAND, runShowFindingStepsCommand);
   context.subscriptions.push(showFindingStepsCommand);
 
+  const inspectSessionCommand = vscode.commands.registerCommand("drift.inspectSession", () => runInspectSessionCommand());
+  context.subscriptions.push(inspectSessionCommand);
+
+  const openInspectorAtStepCommand = vscode.commands.registerCommand(OPEN_INSPECTOR_AT_STEP_COMMAND, runOpenInspectorAtStepCommand);
+  context.subscriptions.push(openInspectorAtStepCommand);
+
+  const viewSessionReportCommand = vscode.commands.registerCommand("drift.viewSessionReport", () => runViewSessionReportCommand());
+  context.subscriptions.push(viewSessionReportCommand);
+
   const dbPath = path.join(context.globalStorageUri.fsPath, "drift.sqlite3");
   storage = openStorage(dbPath);
 
@@ -206,6 +371,10 @@ export async function activate(context: vscode.ExtensionContext) {
     treeView,
     findingsProvider: findingsViewProvider,
     findingsTreeView,
+    inspectorProvider: trajectoryInspectorProvider,
+    inspectorTreeView: inspectorView,
+    reportProvider: sessionReportProvider,
+    reportTreeView: reportView,
     getRuntime: () => runtime,
     getStorage: () => storage,
     getStoragePath: () => dbPath,

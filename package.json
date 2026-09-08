@@ -32,6 +32,14 @@
         {
           "id": "drift.findings",
           "name": "Findings"
+        },
+        {
+          "id": "drift.inspector",
+          "name": "Trajectory Inspector"
+        },
+        {
+          "id": "drift.report",
+          "name": "Session Report"
         }
       ]
     },
@@ -44,6 +52,16 @@
         "command": "drift.analyzeSession",
         "title": "Drift: Analyze Session",
         "icon": "$(search)"
+      },
+      {
+        "command": "drift.inspectSession",
+        "title": "Drift: Inspect Session",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "drift.viewSessionReport",
+        "title": "Drift: View Session Report",
+        "icon": "$(graph)"
       }
     ],
     "menus": {
@@ -51,6 +69,16 @@
         {
           "command": "drift.analyzeSession",
           "when": "view == drift.findings",
+          "group": "navigation"
+        },
+        {
+          "command": "drift.inspectSession",
+          "when": "view == drift.inspector",
+          "group": "navigation"
+        },
+        {
+          "command": "drift.viewSessionReport",
+          "when": "view == drift.report",
           "group": "navigation"
         }
       ]
