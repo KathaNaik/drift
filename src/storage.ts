@@ -20,6 +20,14 @@ export interface DriftSessionWithEvents {
   events: DriftRawEvent[];
 }
 
+export interface DriftModelUsageEvent {
+  id: number;
+  /** Null when the telemetry payload didn't carry a session id Drift could associate it with. */
+  sessionId: string | null;
+  timestamp: number;
+  payload: unknown;
+}
+
 export interface DriftStorage {
   createSession(createdAt?: number): DriftSession;
   ensureSession(sessionId: string, createdAt?: number): DriftSession;
@@ -49,6 +57,15 @@ export interface DriftStorage {
   claimExport(sessionId: string, ownerId: string, leaseDurationMs: number): boolean;
   /** Releases the lease on this session, but only if it's still held by `ownerId` — a caller whose lease already expired and was reclaimed by someone else cannot release the new holder's lease. */
   releaseExportClaim(sessionId: string, ownerId: string): void;
+  /**
+   * Persists one unit of Claude Code OTel model-usage telemetry (one log
+   * record or metric data point), exactly as received. `sessionId` is
+   * associated when the telemetry carried one; ingestion never fails for
+   * telemetry that doesn't.
+   */
+  insertModelUsageEvent(sessionId: string | null, payload: unknown, timestamp?: number): DriftModelUsageEvent;
+  /** Returns one session's model-usage telemetry in the order it was received. */
+  getModelUsageEvents(sessionId: string): DriftModelUsageEvent[];
   close(): void;
 }
 
@@ -99,6 +116,15 @@ export function openStorage(dbFilePath: string): DriftStorage {
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     )
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      timestamp INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+  `);
 
   const insertSessionStmt = db.prepare("INSERT INTO sessions (id, created_at) VALUES (?, ?)");
   const ensureSessionStmt = db.prepare("INSERT OR IGNORE INTO sessions (id, created_at) VALUES (?, ?)");
@@ -123,6 +149,12 @@ export function openStorage(dbFilePath: string): DriftStorage {
       expires_at = excluded.expires_at
   `);
   const releaseLeaseStmt = db.prepare("DELETE FROM export_leases WHERE session_id = ? AND owner_id = ?");
+  const insertModelUsageEventStmt = db.prepare(
+    "INSERT INTO model_usage_events (session_id, timestamp, payload) VALUES (?, ?, ?)"
+  );
+  const getModelUsageEventsStmt = db.prepare(
+    "SELECT id, session_id, timestamp, payload FROM model_usage_events WHERE session_id = ? ORDER BY timestamp ASC, id ASC"
+  );
 
   return {
     createSession(createdAt: number = Date.now()): DriftSession {
@@ -185,6 +217,30 @@ export function openStorage(dbFilePath: string): DriftStorage {
 
     releaseExportClaim(sessionId: string, ownerId: string): void {
       releaseLeaseStmt.run(sessionId, ownerId);
+    },
+
+    insertModelUsageEvent(
+      sessionId: string | null,
+      payload: unknown,
+      timestamp: number = Date.now()
+    ): DriftModelUsageEvent {
+      const result = insertModelUsageEventStmt.run(sessionId, timestamp, JSON.stringify(payload));
+      return { id: Number(result.lastInsertRowid), sessionId, timestamp, payload };
+    },
+
+    getModelUsageEvents(sessionId: string): DriftModelUsageEvent[] {
+      const rows = getModelUsageEventsStmt.all(sessionId) as unknown as {
+        id: number;
+        session_id: string | null;
+        timestamp: number;
+        payload: string;
+      }[];
+      return rows.map((r) => ({
+        id: r.id,
+        sessionId: r.session_id,
+        timestamp: r.timestamp,
+        payload: JSON.parse(r.payload),
+      }));
     },
 
     close(): void {

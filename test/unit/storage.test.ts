@@ -189,3 +189,92 @@ suite("storage export leases (M6B.2)", () => {
     storage.close();
   });
 });
+
+suite("storage model usage telemetry (M7A)", () => {
+  test("persists a model usage event associated with a session", () => {
+    const storage = openStorage(tempDbPath());
+    storage.ensureSession("s1");
+
+    const event = storage.insertModelUsageEvent("s1", { model: "claude-sonnet-5" }, 100);
+    assert.strictEqual(event.sessionId, "s1");
+
+    const events = storage.getModelUsageEvents("s1");
+    assert.strictEqual(events.length, 1);
+    assert.deepStrictEqual(events[0].payload, { model: "claude-sonnet-5" });
+
+    storage.close();
+  });
+
+  test("persists a model usage event with no session association", () => {
+    const storage = openStorage(tempDbPath());
+
+    const event = storage.insertModelUsageEvent(null, { model: "claude-sonnet-5" }, 100);
+    assert.strictEqual(event.sessionId, null);
+
+    storage.close();
+  });
+
+  test("multiple model usage events for one session remain ordered", () => {
+    const storage = openStorage(tempDbPath());
+    storage.ensureSession("s1");
+
+    storage.insertModelUsageEvent("s1", { call: "third" }, 300);
+    storage.insertModelUsageEvent("s1", { call: "first" }, 100);
+    storage.insertModelUsageEvent("s1", { call: "second" }, 200);
+
+    const events = storage.getModelUsageEvents("s1");
+    assert.deepStrictEqual(
+      events.map((e) => (e.payload as { call: string }).call),
+      ["first", "second", "third"]
+    );
+
+    storage.close();
+  });
+
+  test("breaks ties for equal timestamps by insertion order", () => {
+    const storage = openStorage(tempDbPath());
+    storage.ensureSession("s1");
+
+    storage.insertModelUsageEvent("s1", { call: "a" }, 500);
+    storage.insertModelUsageEvent("s1", { call: "b" }, 500);
+
+    const events = storage.getModelUsageEvents("s1");
+    assert.deepStrictEqual(
+      events.map((e) => (e.payload as { call: string }).call),
+      ["a", "b"]
+    );
+
+    storage.close();
+  });
+
+  test("different sessions' model usage events remain isolated", () => {
+    const storage = openStorage(tempDbPath());
+    storage.ensureSession("session-A");
+    storage.ensureSession("session-B");
+
+    storage.insertModelUsageEvent("session-A", { call: "A1" }, 100);
+    storage.insertModelUsageEvent("session-B", { call: "B1" }, 100);
+    storage.insertModelUsageEvent("session-A", { call: "A2" }, 200);
+
+    const eventsA = storage.getModelUsageEvents("session-A");
+    const eventsB = storage.getModelUsageEvents("session-B");
+
+    assert.deepStrictEqual(
+      eventsA.map((e) => (e.payload as { call: string }).call),
+      ["A1", "A2"]
+    );
+    assert.deepStrictEqual(
+      eventsB.map((e) => (e.payload as { call: string }).call),
+      ["B1"]
+    );
+
+    storage.close();
+  });
+
+  test("returns an empty array for a session with no model usage events", () => {
+    const storage = openStorage(tempDbPath());
+    storage.ensureSession("s1");
+    assert.deepStrictEqual(storage.getModelUsageEvents("s1"), []);
+    storage.close();
+  });
+});

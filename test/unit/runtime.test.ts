@@ -3,6 +3,7 @@ import * as http from "http";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DatabaseSync } from "node:sqlite";
 import { startRuntime, checkHealth, DriftRuntime } from "../../src/runtime";
 import { openStorage, DriftStorage } from "../../src/storage";
 
@@ -287,5 +288,216 @@ suite("runtime SessionEnd wiring (M6C)", () => {
       await runtime.stop();
       storage.close();
     }
+  });
+});
+
+suite("runtime OTLP telemetry ingestion (M7A)", () => {
+  let storage: DriftStorage;
+  let runtime: DriftRuntime;
+  let dbPath: string;
+
+  setup(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "drift-runtime-test-"));
+    dbPath = path.join(dir, "drift.sqlite3");
+    storage = openStorage(dbPath);
+    runtime = await startRuntime(storage);
+  });
+
+  teardown(async () => {
+    await runtime.stop();
+    storage.close();
+  });
+
+  function apiRequestLogsPayload(sessionId: string, extraAttributes: { key: string; value: unknown }[] = []) {
+    return {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  eventName: "claude_code.api_request",
+                  attributes: [
+                    { key: "model", value: { stringValue: "claude-sonnet-5" } },
+                    { key: "session.id", value: { stringValue: sessionId } },
+                    { key: "input_tokens", value: { intValue: "10" } },
+                    { key: "output_tokens", value: { intValue: "5" } },
+                    ...extraAttributes,
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  test("a valid claude_code.api_request OTLP logs payload persists locally, associated with the session", async () => {
+    const { statusCode } = await postJson(runtime.port, "/v1/logs", apiRequestLogsPayload("session-t1"));
+    assert.strictEqual(statusCode, 200);
+
+    const events = storage.getModelUsageEvents("session-t1");
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].sessionId, "session-t1");
+  });
+
+  test("multiple model calls for one session remain ordered", async () => {
+    const payload = {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  eventName: "claude_code.api_request",
+                  attributes: [
+                    { key: "session.id", value: { stringValue: "session-t2" } },
+                    { key: "request_id", value: { stringValue: "req-1" } },
+                  ],
+                },
+                {
+                  eventName: "claude_code.api_request",
+                  attributes: [
+                    { key: "session.id", value: { stringValue: "session-t2" } },
+                    { key: "request_id", value: { stringValue: "req-2" } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    await postJson(runtime.port, "/v1/logs", payload);
+    await postJson(runtime.port, "/v1/logs", apiRequestLogsPayload("session-t2"));
+
+    const events = storage.getModelUsageEvents("session-t2");
+    assert.strictEqual(events.length, 3);
+    const requestIds = events.map((e) => {
+      const attrs = (e.payload as any).attributes as { key: string; value: any }[];
+      return attrs.find((a) => a.key === "request_id")?.value?.stringValue;
+    });
+    assert.deepStrictEqual(requestIds, ["req-1", "req-2", undefined]);
+  });
+
+  test("different sessions' telemetry remains isolated", async () => {
+    await postJson(runtime.port, "/v1/logs", apiRequestLogsPayload("session-tA"));
+    await postJson(runtime.port, "/v1/logs", apiRequestLogsPayload("session-tB"));
+
+    assert.strictEqual(storage.getModelUsageEvents("session-tA").length, 1);
+    assert.strictEqual(storage.getModelUsageEvents("session-tB").length, 1);
+  });
+
+  test("missing optional usage fields do not break ingestion", async () => {
+    // Only "model" is present -- no tokens, no cost, no request id, no session.
+    const payload = {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                { eventName: "claude_code.api_request", attributes: [{ key: "model", value: { stringValue: "x" } }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const { statusCode, body } = await postJson(runtime.port, "/v1/logs", payload);
+    assert.strictEqual(statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(body), { status: "ok" });
+  });
+
+  test("unknown telemetry fields are preserved raw", async () => {
+    await postJson(
+      runtime.port,
+      "/v1/logs",
+      apiRequestLogsPayload("session-t3", [{ key: "some_future_field", value: { stringValue: "unexpected" } }])
+    );
+
+    const events = storage.getModelUsageEvents("session-t3");
+    const attrs = (events[0].payload as any).attributes as { key: string; value: any }[];
+    assert.ok(attrs.some((a) => a.key === "some_future_field" && a.value.stringValue === "unexpected"));
+  });
+
+  test("telemetry with no session.id is still persisted, with a null session association", async () => {
+    const payload = {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                { eventName: "claude_code.api_request", attributes: [{ key: "model", value: { stringValue: "x" } }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const { statusCode } = await postJson(runtime.port, "/v1/logs", payload);
+    assert.strictEqual(statusCode, 200);
+
+    // No session id to look up by via the DriftStorage API, so verify the
+    // row landed correctly by reading the database directly.
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare("SELECT session_id, payload FROM model_usage_events WHERE session_id IS NULL").all();
+    db.close();
+
+    assert.strictEqual(rows.length, 1);
+    const persistedPayload = JSON.parse(rows[0].payload as string);
+    assert.strictEqual(persistedPayload.eventName, "claude_code.api_request");
+  });
+
+  test("a claude_code.token.usage OTLP metrics payload persists and is associated with the session", async () => {
+    const payload = {
+      resourceMetrics: [
+        {
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "claude_code.token.usage",
+                  unit: "tokens",
+                  sum: {
+                    dataPoints: [
+                      {
+                        asInt: "42",
+                        attributes: [
+                          { key: "type", value: { stringValue: "input" } },
+                          { key: "session.id", value: { stringValue: "session-t4" } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const { statusCode } = await postJson(runtime.port, "/v1/metrics", payload);
+    assert.strictEqual(statusCode, 200);
+
+    const events = storage.getModelUsageEvents("session-t4");
+    assert.strictEqual(events.length, 1);
+  });
+
+  test("invalid JSON body returns 400 on both telemetry endpoints", async () => {
+    const logsResult = await postJson(runtime.port, "/v1/logs", "{not valid json");
+    assert.strictEqual(logsResult.statusCode, 400);
+
+    const metricsResult = await postJson(runtime.port, "/v1/metrics", "{not valid json");
+    assert.strictEqual(metricsResult.statusCode, 400);
+  });
+
+  test("a batch with no recognizable Claude Code telemetry is a harmless no-op", async () => {
+    const { statusCode } = await postJson(runtime.port, "/v1/logs", { resourceLogs: [] });
+    assert.strictEqual(statusCode, 200);
   });
 });

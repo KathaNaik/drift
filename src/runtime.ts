@@ -1,5 +1,6 @@
 import * as http from "http";
 import { DriftStorage } from "./storage";
+import { extractApiRequestRecords, extractModelUsageMetricDataPoints, ExtractedTelemetryRecord } from "./claudeTelemetryIngest";
 
 export interface DriftRuntime {
   readonly port: number;
@@ -89,6 +90,45 @@ function handleClaudeHook(
   });
 }
 
+/**
+ * Persists whichever telemetry records `extractRecords` finds in the OTLP
+ * body, associating each with a Drift session when the record carried one.
+ * Shared by the /v1/logs and /v1/metrics handlers below; the only
+ * difference between them is which extractor recognizes their payload
+ * shape and which Claude Code events/metrics it looks for.
+ */
+function handleOtlpTelemetry(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  storage: DriftStorage,
+  extractRecords: (body: unknown) => ExtractedTelemetryRecord[]
+): void {
+  const chunks: Buffer[] = [];
+  req.on("data", (chunk: Buffer) => chunks.push(chunk));
+  req.on("end", () => {
+    let body: unknown;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return;
+    }
+
+    const receivedAt = Date.now();
+    for (const record of extractRecords(body)) {
+      if (record.sessionId) {
+        storage.ensureSession(record.sessionId);
+      }
+      storage.insertModelUsageEvent(record.sessionId ?? null, record.raw, receivedAt);
+    }
+
+    sendJson(res, 200, { status: "ok" });
+  });
+  req.on("error", () => {
+    sendJson(res, 400, { error: "Invalid request" });
+  });
+}
+
 export function startRuntime(storage: DriftStorage, onSessionEnd?: SessionEndListener): Promise<DriftRuntime> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
@@ -99,6 +139,19 @@ export function startRuntime(storage: DriftStorage, onSessionEnd?: SessionEndLis
 
       if (req.method === "POST" && req.url === "/hooks/claude") {
         handleClaudeHook(req, res, storage, onSessionEnd);
+        return;
+      }
+
+      // Standard OTLP/HTTP JSON receiver paths, for Claude Code's own
+      // OpenTelemetry export (a separate, opt-in signal from the hooks
+      // above) — see claudeTelemetryIngest.ts.
+      if (req.method === "POST" && req.url === "/v1/logs") {
+        handleOtlpTelemetry(req, res, storage, extractApiRequestRecords);
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/v1/metrics") {
+        handleOtlpTelemetry(req, res, storage, extractModelUsageMetricDataPoints);
         return;
       }
 

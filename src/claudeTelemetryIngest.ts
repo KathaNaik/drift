@@ -1,0 +1,181 @@
+/**
+ * Parses Claude Code's own OpenTelemetry export (OTLP/HTTP JSON) — a
+ * separate, opt-in telemetry stream from the hook-based capture in
+ * runtime.ts, configured via CLAUDE_CODE_ENABLE_TELEMETRY /
+ * OTEL_EXPORTER_OTLP_ENDPOINT. This module is intentionally decoupled from
+ * hook ingestion: nothing here merges telemetry into normalized events or
+ * trajectories (that's explicitly out of scope for this milestone).
+ *
+ * Field names below (model, request_id, client_request_id, input_tokens,
+ * output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+ * duration_ms, session.id) are taken directly from Claude Code's documented
+ * `claude_code.api_request` event and `claude_code.token.usage` /
+ * `claude_code.cost.usage` metrics — not invented. Anything not explicitly
+ * listed there is left alone: it's still preserved in the raw payload this
+ * module extracts records from, just not promoted into ClaudeModelUsage.
+ */
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function num(value: unknown): number | undefined {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim().length > 0 && !Number.isNaN(Number(value))) return Number(value);
+  return undefined;
+}
+
+/**
+ * Decodes an OTLP AnyValue JSON object ({ stringValue } | { intValue } |
+ * { doubleValue } | { boolValue }, per the OTLP/HTTP JSON encoding, where
+ * 64-bit integers are decimal strings) into a plain JS value.
+ */
+function decodeAttributeValue(value: unknown): string | number | boolean | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+  if ("stringValue" in value) return str(value.stringValue);
+  if ("intValue" in value) return num(value.intValue);
+  if ("doubleValue" in value) return num(value.doubleValue);
+  if ("boolValue" in value) return typeof value.boolValue === "boolean" ? value.boolValue : undefined;
+  return undefined;
+}
+
+function attributesToMap(attributes: unknown): Record<string, unknown> {
+  const map: Record<string, unknown> = {};
+  for (const attr of asArray(attributes)) {
+    if (isPlainObject(attr) && typeof attr.key === "string") {
+      map[attr.key] = decodeAttributeValue(attr.value);
+    }
+  }
+  return map;
+}
+
+/** One record extracted from an OTLP payload, ready to persist. */
+export interface ExtractedTelemetryRecord {
+  sessionId: string | undefined;
+  /** The specific log record / metric data point this came from — not the whole batch. */
+  raw: unknown;
+}
+
+/**
+ * Walks an OTLP Logs JSON body (ExportLogsServiceRequest) and returns every
+ * `claude_code.api_request` log record found, in document order. Anything
+ * else in the batch (other event names, malformed entries) is ignored, not
+ * rejected — a batch can legitimately contain events this milestone
+ * doesn't care about yet.
+ */
+export function extractApiRequestRecords(body: unknown): ExtractedTelemetryRecord[] {
+  const records: ExtractedTelemetryRecord[] = [];
+  if (!isPlainObject(body)) {
+    return records;
+  }
+
+  for (const resourceLog of asArray(body.resourceLogs)) {
+    if (!isPlainObject(resourceLog)) continue;
+    for (const scopeLog of asArray(resourceLog.scopeLogs)) {
+      if (!isPlainObject(scopeLog)) continue;
+      for (const logRecord of asArray(scopeLog.logRecords)) {
+        if (!isPlainObject(logRecord)) continue;
+
+        const attributes = attributesToMap(logRecord.attributes);
+        // Newer OTel log APIs carry the event name as a top-level field;
+        // older ones carry it as an "event.name" attribute. Accept either.
+        const eventName = str(logRecord.eventName) ?? str(attributes["event.name"]);
+        if (eventName !== "claude_code.api_request") {
+          continue;
+        }
+
+        records.push({ sessionId: str(attributes["session.id"]), raw: logRecord });
+      }
+    }
+  }
+
+  return records;
+}
+
+/**
+ * Walks an OTLP Metrics JSON body (ExportMetricsServiceRequest) and returns
+ * one record per individual data point found on `claude_code.token.usage`
+ * and `claude_code.cost.usage` metrics, in document order (a single metric
+ * can report one data point per token type/model/session combination in
+ * one export). Each record's `raw` is the complete original metric object
+ * — verbatim, never reconstructed or field-whitelisted — so `description`,
+ * `aggregationTemporality`, `isMonotonic`, and any field OTel adds in the
+ * future all survive, even though only the current data point's own
+ * attributes are used to determine that record's `sessionId`. Sibling data
+ * points on the same metric are therefore visible in each other's raw
+ * payload too (they're part of the same original object) — an accepted
+ * consequence of "verbatim", not a bug.
+ */
+export function extractModelUsageMetricDataPoints(body: unknown): ExtractedTelemetryRecord[] {
+  const records: ExtractedTelemetryRecord[] = [];
+  if (!isPlainObject(body)) {
+    return records;
+  }
+
+  const relevantMetricNames = new Set(["claude_code.token.usage", "claude_code.cost.usage"]);
+
+  for (const resourceMetric of asArray(body.resourceMetrics)) {
+    if (!isPlainObject(resourceMetric)) continue;
+    for (const scopeMetric of asArray(resourceMetric.scopeMetrics)) {
+      if (!isPlainObject(scopeMetric)) continue;
+      for (const metric of asArray(scopeMetric.metrics)) {
+        if (!isPlainObject(metric) || !relevantMetricNames.has(str(metric.name) ?? "")) continue;
+
+        // A counter/gauge's data points live under "sum" or "gauge" respectively.
+        const aggregation = isPlainObject(metric.sum) ? metric.sum : isPlainObject(metric.gauge) ? metric.gauge : undefined;
+        for (const dataPoint of asArray(aggregation?.dataPoints)) {
+          if (!isPlainObject(dataPoint)) continue;
+          const attributes = attributesToMap(dataPoint.attributes);
+          records.push({ sessionId: str(attributes["session.id"]), raw: metric });
+        }
+      }
+    }
+  }
+
+  return records;
+}
+
+/** Provider-independent view of one Claude API request's usage, recovered from a raw telemetry record. Any field absent from the source telemetry is simply undefined — never fabricated. */
+export interface ClaudeModelUsage {
+  sessionId: string | undefined;
+  model: string | undefined;
+  inputTokens: number | undefined;
+  outputTokens: number | undefined;
+  cacheReadTokens: number | undefined;
+  cacheCreationTokens: number | undefined;
+  requestId: string | undefined;
+  durationMs: number | undefined;
+  costUsd: number | undefined;
+}
+
+/**
+ * Recovers the fields this milestone cares about from one
+ * `claude_code.api_request` log record (as returned by
+ * extractApiRequestRecords). Never throws: a record missing some or all of
+ * these attributes just yields undefined for that field.
+ */
+export function extractModelUsage(apiRequestLogRecord: unknown): ClaudeModelUsage {
+  const attributes = isPlainObject(apiRequestLogRecord) ? attributesToMap(apiRequestLogRecord.attributes) : {};
+
+  return {
+    sessionId: str(attributes["session.id"]),
+    model: str(attributes["model"]),
+    inputTokens: num(attributes["input_tokens"]),
+    outputTokens: num(attributes["output_tokens"]),
+    cacheReadTokens: num(attributes["cache_read_tokens"]),
+    cacheCreationTokens: num(attributes["cache_creation_tokens"]),
+    requestId: str(attributes["request_id"]) ?? str(attributes["client_request_id"]),
+    durationMs: num(attributes["duration_ms"]),
+    costUsd: num(attributes["cost_usd"]),
+  };
+}
