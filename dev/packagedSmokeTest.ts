@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   });
 
   const driftExtensionPath = fs.existsSync(path.join(extensionsDir))
-    ? fs.readdirSync(extensionsDir).find((d) => d.startsWith("drift.drift-agent-monitor"))
+    ? fs.readdirSync(extensionsDir).find((d) => d.toLowerCase().startsWith("kathanaik.drift-agent-monitor"))
     : undefined;
 
   console.log("\n=== CLEAN-PROFILE PROOF ===");

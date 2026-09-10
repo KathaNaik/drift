@@ -117,14 +117,14 @@ async function postFullSession(port: number, sessionId: string): Promise<void> {
 
 suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   test("extension activates and starts the local runtime", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor");
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor");
     assert.ok(ext, "Drift extension not found");
     await ext!.activate();
     assert.strictEqual(ext!.isActive, true);
   });
 
   test("contributes an activity bar container named Drift", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const containers = ext.packageJSON.contributes.viewsContainers.activitybar;
     assert.ok(
       containers.some((c: { id: string; title: string }) => c.id === "drift" && c.title === "Drift"),
@@ -133,7 +133,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("contributes a sidebar view inside the Drift container", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const views = ext.packageJSON.contributes.views.drift;
     assert.ok(
       views.some((v: { id: string }) => v.id === "drift.sidebar"),
@@ -142,7 +142,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("GET /health returns 200 against the runtime the extension started", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -152,7 +152,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("contributes the drift.installClaudeHooks command", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const commands: { command: string }[] = ext.packageJSON.contributes.commands;
     assert.ok(
       commands.some((c) => c.command === "drift.installClaudeHooks"),
@@ -161,7 +161,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("running drift.installClaudeHooks writes a real Claude hook config for the open workspace, using the running runtime's port", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -196,13 +196,13 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("opens SQLite storage under the extension's Drift-managed global storage path", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
 
     const storagePath = exports.getStoragePath();
     assert.ok(storagePath, "extension did not report a storage path");
     assert.ok(
-      storagePath.split(path.sep).includes("globalStorage") && storagePath.includes("drift.drift-agent-monitor"),
+      storagePath.split(path.sep).includes("globalStorage") && storagePath.includes("kathanaik.drift-agent-monitor"),
       `storage should live under VS Code's per-extension global storage directory, got: ${storagePath}`
     );
     assert.ok(fs.existsSync(storagePath), "SQLite database file was not created");
@@ -212,7 +212,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("persists a session and its ordered raw events through the running extension's storage", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const storage = exports.getStorage()!;
 
@@ -229,7 +229,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("a real hook posted to the running extension's /hooks/claude endpoint can be read back and normalized (M5A)", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -273,7 +273,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("contributes the drift.otlp.enabled and drift.otlp.endpoint settings, disabled by default (M6C)", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const properties = ext.packageJSON.contributes.configuration.properties;
     assert.strictEqual(properties["drift.otlp.enabled"].type, "boolean");
     assert.strictEqual(properties["drift.otlp.enabled"].default, false);
@@ -281,7 +281,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("M6C END-TO-END: a completed real session flows through normalization, trajectory, OTel projection, and OTLP export", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -309,7 +309,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("M6C DISABLED MODE: a completed real session makes no network request when drift.otlp.enabled is left at its default", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -338,7 +338,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("M6C: an export failure does not affect the SessionEnd hook response or the stored session data", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -365,7 +365,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("M6C: a duplicate SessionEnd for the same session does not duplicate the export", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -399,7 +399,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("opening the Drift sidebar shows Runtime: Online while the runtime is up", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
 
     await vscode.commands.executeCommand("workbench.view.extension.drift");
@@ -413,7 +413,7 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
   });
 
   test("deactivate stops the runtime and sets Offline through extension logic, without a manual setStatus call", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");

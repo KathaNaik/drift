@@ -42,13 +42,13 @@ export async function run(): Promise<void> {
     }
   }
 
-  const ext = vscode.extensions.getExtension("drift.drift-agent-monitor");
+  const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor");
   await check("Drift extension is discoverable from the installed VSIX", () => {
-    assert.ok(ext, 'vscode.extensions.getExtension("drift.drift-agent-monitor") returned undefined -- the VSIX was not installed into this extensions directory');
+    assert.ok(ext, 'vscode.extensions.getExtension("kathanaik.drift-agent-monitor") returned undefined -- the VSIX was not installed into this extensions directory');
   });
 
   if (!ext) {
-    throw new Error("cannot continue: drift.drift-agent-monitor extension was not found at all");
+    throw new Error("cannot continue: kathanaik.drift-agent-monitor extension was not found at all");
   }
 
   await check("extensionPath resolves inside the clean, isolated extensions directory", () => {

@@ -98,13 +98,13 @@ function syntheticAnalysis(windows: SessionAnalysisWindow[]): SessionAnalysis {
 
 suite("Drift Findings view (M11A)", () => {
   test("contributes the drift.findings view inside the Drift container", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const views = ext.packageJSON.contributes.views.drift;
     assert.ok(views.some((v: { id: string }) => v.id === "drift.findings"), "drift.findings view not contributed");
   });
 
   test("contributes the drift.analyzeSession command", () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const commands: { command: string }[] = ext.packageJSON.contributes.commands;
     assert.ok(commands.some((c) => c.command === "drift.analyzeSession"), "drift.analyzeSession command not contributed");
   });
@@ -122,7 +122,7 @@ suite("Drift Findings view (M11A)", () => {
   });
 
   test("Observe, Finding, and Redirect Candidate render with visibly distinct labels and icons", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const provider: DriftFindingsProvider = exports.findingsProvider;
 
@@ -147,7 +147,7 @@ suite("Drift Findings view (M11A)", () => {
   });
 
   test("evidence and reasonCodes are inspectable without dumping raw JSON", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const provider: DriftFindingsProvider = exports.findingsProvider;
 
@@ -178,7 +178,7 @@ suite("Drift Findings view (M11A)", () => {
   });
 
   test("a failed semantic classification renders safely as Observe with the failure contained, never thrown or raw-dumped", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const provider: DriftFindingsProvider = exports.findingsProvider;
 
@@ -198,7 +198,7 @@ suite("Drift Findings view (M11A)", () => {
   });
 
   test("usage is shown only when attributed, and omitted (not fabricated) when absent", async () => {
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const provider: DriftFindingsProvider = exports.findingsProvider;
 
@@ -224,7 +224,7 @@ suite("Drift Findings view (M11A)", () => {
 
   test("real stored session: Analyze Session renders correct M10B analyses with correct step references, and repeating it does not duplicate state", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime, "extension did not start a runtime");
@@ -268,7 +268,7 @@ suite("Drift Findings view (M11A)", () => {
 
   test("drift.showFindingSteps opens a compact, non-JSON, read-only summary of the involved steps", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -298,7 +298,7 @@ suite("Drift Findings view (M11A)", () => {
 
   test("no automatic/background Gemma calls happen merely from activating the extension or posting hook events", async () => {
     let createRuntimeCalls = 0;
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     assert.ok(runtime);
@@ -324,7 +324,7 @@ suite("Drift Findings view (M11A)", () => {
 
   test("semantic failure for one window still displays as Observe end-to-end through the real command, with the failure contained", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const provider: DriftFindingsProvider = exports.findingsProvider;
@@ -355,7 +355,7 @@ suite("Drift Findings view (M11A)", () => {
       if (!MODEL_PRESENT) this.skip();
       this.timeout(60000);
 
-      const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+      const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
       const exports = await ext.activate();
       const runtime = exports.getRuntime();
       const provider: DriftFindingsProvider = exports.findingsProvider;

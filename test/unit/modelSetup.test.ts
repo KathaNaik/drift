@@ -41,7 +41,7 @@ suite("modelSetup (M15B) - default configs point at real, pinned assets", () => 
   });
 
   test("managed paths never reference the development machine or a repository-relative path", () => {
-    const globalStorageDir = "/Users/someone-else/Library/Application Support/Code/User/globalStorage/drift.drift-agent-monitor";
+    const globalStorageDir = "/Users/someone-else/Library/Application Support/Code/User/globalStorage/kathanaik.drift-agent-monitor";
     const modelPath = getManagedModelPath(globalStorageDir);
     const llamaPath = getManagedLlamaServerPath(globalStorageDir);
     assert.ok(modelPath.startsWith(globalStorageDir));

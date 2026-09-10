@@ -60,7 +60,7 @@ async function analyzeAndPrepareApprovedRedirect(
 suite("Drift Approved Redirect Injection (M12B)", () => {
   test("an approved packet injects into the correct session's next UserPromptSubmit, with content exactly reflecting the approved packet, then becomes consumed", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -84,7 +84,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("no raw/internal Drift data leaks into the real injected HTTP response", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
@@ -105,7 +105,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("unapproved (merely prepared) packet cannot inject", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -139,7 +139,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("a cancelled packet cannot inject", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -156,7 +156,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("a consumed packet cannot inject twice", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -175,7 +175,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("a mismatched active session is rejected -- the approved packet stays approved and untouched", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -195,7 +195,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("failed delivery (stale analysis) leaves Claude's session unaffected and the packet retryable, not consumed", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const redirectLifecycle = exports.redirectLifecycle;
@@ -220,7 +220,7 @@ suite("Drift Approved Redirect Injection (M12B)", () => {
 
   test("no additional Gemma call occurs during approval/injection", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
+    const ext = vscode.extensions.getExtension("kathanaik.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
