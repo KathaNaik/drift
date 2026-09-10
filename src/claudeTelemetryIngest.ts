@@ -159,14 +159,94 @@ export interface ClaudeModelUsage {
   costUsd: number | undefined;
 }
 
+/** Exposed for trajectoryUsageAttribution.ts, which needs an all-undefined usage to zero out a duplicate metric occurrence (see metricOccurrenceFingerprint) without fabricating it as a real all-zero record. */
+export function emptyClaudeModelUsage(): ClaudeModelUsage {
+  return {
+    sessionId: undefined,
+    model: undefined,
+    inputTokens: undefined,
+    outputTokens: undefined,
+    cacheReadTokens: undefined,
+    cacheCreationTokens: undefined,
+    requestId: undefined,
+    durationMs: undefined,
+    costUsd: undefined,
+  };
+}
+
 /**
- * Recovers the fields this milestone cares about from one
- * `claude_code.api_request` log record (as returned by
- * extractApiRequestRecords). Never throws: a record missing some or all of
- * these attributes just yields undefined for that field.
+ * True for a verbatim OTLP metric object (the shape extractModelUsageMetricDataPoints
+ * stores per M7A.1) -- `name` plus a `sum`/`gauge` aggregation -- and false
+ * for a `claude_code.api_request` log record, which has neither.
  */
-export function extractModelUsage(apiRequestLogRecord: unknown): ClaudeModelUsage {
-  const attributes = isPlainObject(apiRequestLogRecord) ? attributesToMap(apiRequestLogRecord.attributes) : {};
+function isMetricShaped(payload: unknown): payload is Record<string, unknown> & { name: string } {
+  return isPlainObject(payload) && typeof payload.name === "string" && (isPlainObject(payload.sum) || isPlainObject(payload.gauge));
+}
+
+function metricDataPoints(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const aggregation = isPlainObject(payload.sum) ? payload.sum : isPlainObject(payload.gauge) ? payload.gauge : undefined;
+  return asArray(aggregation?.dataPoints).filter(isPlainObject);
+}
+
+/**
+ * M13D: real, non-interactive (`claude -p`) Claude Code CLI sessions were
+ * confirmed (live) to emit no `claude_code.api_request` log record at all --
+ * only periodic `claude_code.token.usage` / `claude_code.cost.usage`
+ * metrics. Recovers the same provider-independent usage fields from one of
+ * those metric objects: cost.usage carries a single data point (its own
+ * `asDouble`/`asInt` is the cost); token.usage carries one data point per
+ * token `type` attribute (input/output/cacheRead/cacheCreation). Neither
+ * metric's data points carry a request id or a per-call duration anywhere
+ * in Claude Code's documented attributes for them, so those two fields stay
+ * undefined here -- never reconstructed from `claude_code.active_time.total`
+ * or any other CLI-wide activity metric, which measures something else
+ * entirely (total wall-clock CLI activity, not one request's duration).
+ */
+function extractModelUsageFromMetric(payload: Record<string, unknown> & { name: string }): ClaudeModelUsage {
+  const usage = emptyClaudeModelUsage();
+  const dataPoints = metricDataPoints(payload);
+  if (dataPoints.length === 0) return usage;
+
+  const firstAttributes = attributesToMap(dataPoints[0].attributes);
+  usage.sessionId = str(firstAttributes["session.id"]);
+  usage.model = str(firstAttributes["model"]);
+
+  if (payload.name === "claude_code.cost.usage") {
+    usage.costUsd = num(dataPoints[0].asDouble ?? dataPoints[0].asInt);
+    return usage;
+  }
+
+  if (payload.name === "claude_code.token.usage") {
+    for (const dataPoint of dataPoints) {
+      const attributes = attributesToMap(dataPoint.attributes);
+      const type = str(attributes["type"]);
+      const value = num(dataPoint.asDouble ?? dataPoint.asInt);
+      if (type === "input") usage.inputTokens = value;
+      else if (type === "output") usage.outputTokens = value;
+      else if (type === "cacheRead") usage.cacheReadTokens = value;
+      else if (type === "cacheCreation") usage.cacheCreationTokens = value;
+    }
+    return usage;
+  }
+
+  return usage;
+}
+
+/**
+ * Recovers the fields this milestone cares about from one persisted
+ * model-usage telemetry record -- either a `claude_code.api_request` log
+ * record (as returned by extractApiRequestRecords) or a
+ * `claude_code.token.usage` / `claude_code.cost.usage` metric object (as
+ * returned by extractModelUsageMetricDataPoints; see M13D). Never throws: a
+ * record missing some or all of the relevant fields just yields undefined
+ * for each of them.
+ */
+export function extractModelUsage(usageEventPayload: unknown): ClaudeModelUsage {
+  if (isMetricShaped(usageEventPayload)) {
+    return extractModelUsageFromMetric(usageEventPayload);
+  }
+
+  const attributes = isPlainObject(usageEventPayload) ? attributesToMap(usageEventPayload.attributes) : {};
 
   return {
     sessionId: str(attributes["session.id"]),
@@ -179,4 +259,33 @@ export function extractModelUsage(apiRequestLogRecord: unknown): ClaudeModelUsag
     durationMs: num(attributes["duration_ms"]),
     costUsd: num(attributes["cost_usd"]),
   };
+}
+
+/**
+ * A stable identity for one metric *occurrence*, built only from fields
+ * Claude Code itself reports on each data point (its own `type`, and its
+ * own declared `startTimeUnixNano`/`timeUnixNano` aggregation window) --
+ * never a timestamp *guess*. Two stored model-usage rows sharing this
+ * fingerprint describe the exact same real occurrence, either because
+ * extractModelUsageMetricDataPoints stored one row per sibling data point
+ * on a single multi-data-point export (M7A.1's own "one row per data
+ * point" convention), or because the real CLI's periodic exporter re-sent
+ * an unchanged delta window on a later tick (confirmed live in M13D-LIVE) --
+ * and must be counted as ONE occurrence, not once per stored row. Returns
+ * undefined for a `claude_code.api_request` log record: each one already
+ * represents its own distinct request, with nothing to deduplicate against.
+ */
+export function metricOccurrenceFingerprint(payload: unknown): string | undefined {
+  if (!isMetricShaped(payload)) return undefined;
+  const dataPoints = metricDataPoints(payload);
+  if (dataPoints.length === 0) return undefined;
+
+  const parts = dataPoints
+    .map((dataPoint) => {
+      const attributes = attributesToMap(dataPoint.attributes);
+      return [str(attributes["session.id"]) ?? "", str(attributes["type"]) ?? "", str(dataPoint.startTimeUnixNano) ?? "", str(dataPoint.timeUnixNano) ?? ""].join("|");
+    })
+    .sort();
+
+  return `${payload.name}::${parts.join(";")}`;
 }

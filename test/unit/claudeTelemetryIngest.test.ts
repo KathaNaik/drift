@@ -3,6 +3,7 @@ import {
   extractApiRequestRecords,
   extractModelUsageMetricDataPoints,
   extractModelUsage,
+  metricOccurrenceFingerprint,
 } from "../../src/claudeTelemetryIngest";
 
 // Shapes below follow Claude Code's documented `claude_code.api_request`
@@ -426,5 +427,146 @@ suite("claudeTelemetryIngest (M7A)", () => {
     extractModelUsageMetricDataPoints(payload);
 
     assert.deepStrictEqual(payload, before);
+  });
+});
+
+// Shapes below are transcribed verbatim (field-for-field) from genuine OTLP
+// bodies captured live from the real, installed Claude Code CLI (v2.1.259)
+// running `claude -p ... --output-format json` -- see M13D-LIVE. A real,
+// non-interactive session was confirmed to emit NO claude_code.api_request
+// log record at all: only these two metrics, exported once per real API
+// call (plus periodic re-exports of the same values on later ticks while
+// the process stays alive -- see the fingerprint suite below).
+function realCostUsageMetric(sessionId: string, costUsd: number, startTime: string, endTime: string) {
+  return {
+    name: "claude_code.cost.usage",
+    description: "Cost of the Claude Code session",
+    unit: "USD",
+    sum: {
+      aggregationTemporality: 1,
+      isMonotonic: true,
+      dataPoints: [
+        {
+          attributes: [
+            { key: "user.id", value: { stringValue: "u1" } },
+            { key: "session.id", value: { stringValue: sessionId } },
+            { key: "organization.id", value: { stringValue: "org1" } },
+            { key: "terminal.type", value: { stringValue: "non-interactive" } },
+            { key: "model", value: { stringValue: "claude-sonnet-5" } },
+          ],
+          startTimeUnixNano: startTime,
+          timeUnixNano: endTime,
+          asDouble: costUsd,
+        },
+      ],
+    },
+  };
+}
+
+function realTokenUsageMetric(sessionId: string, tokens: { input: number; output: number; cacheRead: number; cacheCreation: number }, startTime: string, endTime: string) {
+  const typeMap: [string, number][] = [
+    ["input", tokens.input],
+    ["output", tokens.output],
+    ["cacheRead", tokens.cacheRead],
+    ["cacheCreation", tokens.cacheCreation],
+  ];
+  return {
+    name: "claude_code.token.usage",
+    description: "Number of tokens used",
+    unit: "tokens",
+    sum: {
+      aggregationTemporality: 1,
+      isMonotonic: true,
+      dataPoints: typeMap.map(([type, value]) => ({
+        attributes: [
+          { key: "user.id", value: { stringValue: "u1" } },
+          { key: "session.id", value: { stringValue: sessionId } },
+          { key: "model", value: { stringValue: "claude-sonnet-5" } },
+          { key: "type", value: { stringValue: type } },
+        ],
+        startTimeUnixNano: startTime,
+        timeUnixNano: endTime,
+        asDouble: value,
+      })),
+    },
+  };
+}
+
+suite("claudeTelemetryIngest real CLI metric shapes (M13D)", () => {
+  test("extractModelUsage recovers costUsd from a genuine claude_code.cost.usage metric, and nothing else is fabricated", () => {
+    const metric = realCostUsageMetric("session-1", 0.0505506, "1789009620902000000", "1789009620992000000");
+    const usage = extractModelUsage(metric);
+
+    assert.strictEqual(usage.sessionId, "session-1");
+    assert.strictEqual(usage.model, "claude-sonnet-5");
+    assert.strictEqual(usage.costUsd, 0.0505506);
+    assert.strictEqual(usage.inputTokens, undefined);
+    assert.strictEqual(usage.outputTokens, undefined);
+    assert.strictEqual(usage.cacheReadTokens, undefined);
+    assert.strictEqual(usage.cacheCreationTokens, undefined);
+    assert.strictEqual(usage.requestId, undefined, "a metric never carries a request id -- never guessed");
+    assert.strictEqual(usage.durationMs, undefined, "a metric never carries a per-call duration -- never reconstructed from an unrelated CLI-wide activity metric");
+  });
+
+  test("extractModelUsage recovers all four token fields from a genuine claude_code.token.usage metric's typed data points", () => {
+    const metric = realTokenUsageMetric("session-1", { input: 2, output: 126, cacheRead: 29433, cacheCreation: 10850 }, "1789009620902000000", "1789009620992000000");
+    const usage = extractModelUsage(metric);
+
+    assert.strictEqual(usage.inputTokens, 2);
+    assert.strictEqual(usage.outputTokens, 126);
+    assert.strictEqual(usage.cacheReadTokens, 29433);
+    assert.strictEqual(usage.cacheCreationTokens, 10850);
+    assert.strictEqual(usage.costUsd, undefined, "token.usage never carries cost -- that lives only on the sibling cost.usage metric");
+    assert.strictEqual(usage.sessionId, "session-1");
+  });
+
+  test("extractModelUsage never throws for a metric-shaped payload with no data points", () => {
+    assert.doesNotThrow(() => extractModelUsage({ name: "claude_code.cost.usage", sum: { dataPoints: [] } }));
+    const usage = extractModelUsage({ name: "claude_code.cost.usage", sum: { dataPoints: [] } });
+    assert.strictEqual(usage.costUsd, undefined);
+  });
+
+  test("extractModelUsage ignores a metric name it doesn't recognize, without throwing or fabricating", () => {
+    const usage = extractModelUsage({ name: "claude_code.active_time.total", sum: { dataPoints: [{ attributes: [{ key: "session.id", value: { stringValue: "s1" } }], asDouble: 3.4 }] } });
+    assert.strictEqual(usage.costUsd, undefined);
+    assert.strictEqual(usage.inputTokens, undefined);
+    assert.strictEqual(usage.sessionId, "s1", "session id is still recoverable even from a metric this module doesn't otherwise act on");
+  });
+
+  suite("metricOccurrenceFingerprint", () => {
+    test("returns undefined for a claude_code.api_request log record -- each one is already its own distinct request, nothing to deduplicate", () => {
+      const records = extractApiRequestRecords({
+        resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: "claude_code.api_request", attributes: [{ key: "session.id", value: { stringValue: "s1" } }] }] }] }],
+      });
+      assert.strictEqual(metricOccurrenceFingerprint(records[0].raw), undefined);
+    });
+
+    test("two metric objects with the identical session/type/start/end window produce the same fingerprint -- the real CLI's own re-exported delta", () => {
+      const a = realCostUsageMetric("session-1", 0.05, "1000", "2000");
+      const b = realCostUsageMetric("session-1", 0.05, "1000", "2000");
+      assert.strictEqual(metricOccurrenceFingerprint(a), metricOccurrenceFingerprint(b));
+    });
+
+    test("two metric objects with different time windows produce different fingerprints -- a genuinely later, distinct call", () => {
+      const a = realCostUsageMetric("session-1", 0.05, "1000", "2000");
+      const b = realCostUsageMetric("session-1", 0.09, "3000", "4000");
+      assert.notStrictEqual(metricOccurrenceFingerprint(a), metricOccurrenceFingerprint(b));
+    });
+
+    test("cost.usage and token.usage for the very same underlying call produce different fingerprints -- they are two separate metrics, deduplicated independently", () => {
+      const cost = realCostUsageMetric("session-1", 0.05, "1000", "2000");
+      const tokens = realTokenUsageMetric("session-1", { input: 2, output: 14, cacheRead: 1, cacheCreation: 1 }, "1000", "2000");
+      assert.notStrictEqual(metricOccurrenceFingerprint(cost), metricOccurrenceFingerprint(tokens));
+    });
+
+    test("a different session's identical-looking metric produces a different fingerprint -- session identity is part of the occurrence's own identity", () => {
+      const a = realCostUsageMetric("session-1", 0.05, "1000", "2000");
+      const b = realCostUsageMetric("session-2", 0.05, "1000", "2000");
+      assert.notStrictEqual(metricOccurrenceFingerprint(a), metricOccurrenceFingerprint(b));
+    });
+
+    test("returns undefined for a metric with no data points", () => {
+      assert.strictEqual(metricOccurrenceFingerprint({ name: "claude_code.cost.usage", sum: { dataPoints: [] } }), undefined);
+    });
   });
 });

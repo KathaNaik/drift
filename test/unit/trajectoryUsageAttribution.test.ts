@@ -247,3 +247,186 @@ suite("trajectoryUsageAttribution (M7C)", () => {
     });
   });
 });
+
+// Shapes below are transcribed verbatim from genuine OTLP bodies captured
+// live from the real, installed Claude Code CLI running `claude -p`, which
+// was confirmed (M13D-LIVE) to emit no claude_code.api_request log record
+// at all -- only these two metrics.
+function realCostUsageMetric(sessionId: string, costUsd: number, startTime: string, endTime: string) {
+  return {
+    name: "claude_code.cost.usage",
+    sum: {
+      aggregationTemporality: 1,
+      isMonotonic: true,
+      dataPoints: [{ attributes: [{ key: "session.id", value: { stringValue: sessionId } }, { key: "model", value: { stringValue: "claude-sonnet-5" } }], startTimeUnixNano: startTime, timeUnixNano: endTime, asDouble: costUsd }],
+    },
+  };
+}
+
+function realTokenUsageMetric(sessionId: string, tokens: { input: number; output: number; cacheRead: number; cacheCreation: number }, startTime: string, endTime: string) {
+  const typeMap: [string, number][] = [
+    ["input", tokens.input],
+    ["output", tokens.output],
+    ["cacheRead", tokens.cacheRead],
+    ["cacheCreation", tokens.cacheCreation],
+  ];
+  return {
+    name: "claude_code.token.usage",
+    sum: {
+      aggregationTemporality: 1,
+      isMonotonic: true,
+      dataPoints: typeMap.map(([type, value]) => ({
+        attributes: [{ key: "session.id", value: { stringValue: sessionId } }, { key: "model", value: { stringValue: "claude-sonnet-5" } }, { key: "type", value: { stringValue: type } }],
+        startTimeUnixNano: startTime,
+        timeUnixNano: endTime,
+        asDouble: value,
+      })),
+    },
+  };
+}
+
+suite("trajectoryUsageAttribution real CLI metric telemetry (M13D)", () => {
+  let storage: DriftStorage;
+
+  setup(() => {
+    storage = openStorage(tempDbPath());
+  });
+
+  teardown(() => {
+    storage.close();
+  });
+
+  test("a genuine claude_code.cost.usage occurrence is counted as one real model call", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 1);
+    assert.ok(Math.abs(enriched.sessionTotals.costUsd! - 0.05) < 1e-9);
+  });
+
+  test("a genuine claude_code.token.usage occurrence contributes its four token fields but is never itself counted as a model call", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realTokenUsageMetric("s1", { input: 2, output: 126, cacheRead: 29433, cacheCreation: 10850 }, "1000", "2000"), 110);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 0, "no cost.usage occurrence exists in this fixture -- token.usage alone must never manufacture a call");
+    assert.strictEqual(enriched.sessionTotals.inputTokens, 2);
+    assert.strictEqual(enriched.sessionTotals.outputTokens, 126);
+    assert.strictEqual(enriched.sessionTotals.cacheReadTokens, 29433);
+    assert.strictEqual(enriched.sessionTotals.cacheWriteTokens, 10850);
+  });
+
+  test("one real call's cost.usage + token.usage pair is counted as exactly one model call with complete usage, matching what one real claude -p turn actually emits", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.0505506, "1000", "2000"), 110);
+    storage.insertModelUsageEvent("s1", realTokenUsageMetric("s1", { input: 2, output: 126, cacheRead: 29433, cacheCreation: 10850 }, "1000", "2000"), 110);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 1);
+    assert.strictEqual(enriched.sessionTotals.inputTokens, 2);
+    assert.strictEqual(enriched.sessionTotals.outputTokens, 126);
+    assert.ok(Math.abs(enriched.sessionTotals.costUsd! - 0.0505506) < 1e-9);
+  });
+
+  test("the real CLI's periodic re-export of the identical delta window is deduplicated -- never counted as additional calls or additional tokens", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    // The exact same occurrence, stored 5 times -- reproducing the real,
+    // live-observed behavior of Claude Code's periodic OTEL exporter
+    // re-sending an unchanged delta window on later ticks.
+    for (let i = 0; i < 5; i++) {
+      storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110 + i);
+      storage.insertModelUsageEvent("s1", realTokenUsageMetric("s1", { input: 2, output: 14, cacheRead: 100, cacheCreation: 50 }, "1000", "2000"), 110 + i);
+    }
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 1, "5 repeated exports of the same occurrence must count as exactly 1 call");
+    assert.strictEqual(enriched.sessionTotals.inputTokens, 2, "must not be 5x inflated");
+    assert.strictEqual(enriched.sessionTotals.outputTokens, 14);
+    assert.ok(Math.abs(enriched.sessionTotals.costUsd! - 0.05) < 1e-9);
+    assert.strictEqual(enriched.sessionTotals.records.length, 10, "every stored row is still preserved for auditability, even the deduplicated ones");
+  });
+
+  test("a genuinely later, distinct call (different time window) after a repeated one is still counted separately", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    // First call, re-exported twice (duplicate).
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 111);
+    // A second, genuinely distinct call.
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.09, "3000", "4000"), 120);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 2);
+    assert.ok(Math.abs(enriched.sessionTotals.costUsd! - 0.14) < 1e-9);
+  });
+
+  test("real metric telemetry stays session-correlated: an identical-looking occurrence in a different session is never deduplicated against or attributed to this one", () => {
+    storage.ensureSession("session-A");
+    storage.ensureSession("session-B");
+    storage.insertRawEvent("session-A", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertRawEvent("session-B", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+
+    storage.insertModelUsageEvent("session-A", realCostUsageMetric("session-A", 0.05, "1000", "2000"), 110);
+    storage.insertModelUsageEvent("session-B", realCostUsageMetric("session-B", 0.05, "1000", "2000"), 110);
+
+    const enrichedA = attributeUsageToTrajectory(trajectoryFor("session-A", storage), storage);
+    const enrichedB = attributeUsageToTrajectory(trajectoryFor("session-B", storage), storage);
+
+    assert.strictEqual(enrichedA.sessionTotals.modelCalls, 1);
+    assert.strictEqual(enrichedB.sessionTotals.modelCalls, 1, "session-B's own genuine call must not be suppressed as if it were session-A's duplicate");
+  });
+
+  test("real metric-derived usage that has no matching prompt.id stays session-level, not guessed onto a step (unchanged M7C attribution rule)", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.steps[0].usage, undefined, "a metric never carries prompt.id, so it can never land on a step -- unchanged from before M13D");
+    assert.strictEqual(enriched.sessionTotals.modelCalls, 1);
+  });
+
+  test("durationMs stays undefined for real metric-derived usage -- never reconstructed from an unrelated CLI-wide activity metric", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110);
+    storage.insertModelUsageEvent("s1", realTokenUsageMetric("s1", { input: 2, output: 14, cacheRead: 1, cacheCreation: 1 }, "1000", "2000"), 110);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const enriched = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.strictEqual(enriched.sessionTotals.durationMs, undefined);
+  });
+
+  test("deterministic and non-mutating for real metric telemetry, including the repeated-export case", () => {
+    storage.ensureSession("s1");
+    storage.insertRawEvent("s1", { hook_event_name: "UserPromptSubmit", prompt_id: "p1" }, 100);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 110);
+    storage.insertModelUsageEvent("s1", realCostUsageMetric("s1", 0.05, "1000", "2000"), 111);
+
+    const trajectory = trajectoryFor("s1", storage);
+    const snapshotBefore = JSON.stringify(trajectory);
+    const first = attributeUsageToTrajectory(trajectory, storage);
+    const second = attributeUsageToTrajectory(trajectory, storage);
+
+    assert.deepStrictEqual(first, second);
+    assert.strictEqual(JSON.stringify(trajectory), snapshotBefore);
+  });
+});
