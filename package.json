@@ -1,15 +1,31 @@
 {
   "name": "drift",
   "displayName": "Drift",
-  "description": "Monitors coding-agent trajectories and detects low-value compute.",
-  "version": "0.0.1",
-  "private": true,
+  "description": "Monitors Claude Code sessions locally and flags low-value compute -- repeated retries, stale rereads, redundant subagent work -- using a fully local model. No cloud calls, no session data leaves your machine.",
+  "version": "0.1.0",
   "publisher": "drift",
+  "icon": "resources/drift-icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KathaNaik/drift.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "claude code",
+    "claude",
+    "ai agent",
+    "coding agent",
+    "observability",
+    "local model",
+    "sustainability",
+    "llama.cpp"
   ],
   "activationEvents": [],
   "main": "./out/src/extension.js",
@@ -52,6 +68,10 @@
         "command": "drift.analyzeSession",
         "title": "Drift: Analyze Session",
         "icon": "$(search)"
+      },
+      {
+        "command": "drift.setupLocalModel",
+        "title": "Drift: Setup Local Model"
       },
       {
         "command": "drift.inspectSession",
@@ -114,13 +134,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package --target darwin-arm64"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.0",
     "@types/node": "^22.20.1",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
     "glob": "^10.3.0",
     "mocha": "^10.4.0",
     "typescript": "^5.4.0"

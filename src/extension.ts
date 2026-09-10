@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { DriftSidebarProvider } from "./driftSidebarProvider";
@@ -17,6 +18,7 @@ import { buildTrajectory } from "./trajectory";
 import { attributeUsageToTrajectory, TrajectoryUsage } from "./trajectoryUsageAttribution";
 import { analyzeSession, SessionAnalysis, SessionAnalysisWindow } from "./sessionAnalysisPipeline";
 import { LocalModelRuntime, createLocalModelRuntime } from "./localModelRuntime";
+import { checkModelStatus, checkLlamaRuntimeStatus, downloadModel, installLlamaRuntime, getManagedModelPath, getManagedLlamaServerPath } from "./modelSetup";
 
 export interface RuntimeStartDeps {
   startRuntime: (storage: DriftStorage) => Promise<DriftRuntime>;
@@ -70,12 +72,19 @@ let inspectorTreeView: vscode.TreeView<InspectorNode> | undefined;
 let reportProvider: DriftSessionReportProvider | undefined;
 let storage: DriftStorage | undefined;
 let extensionUri: vscode.Uri | undefined;
+/** Drift's own per-extension global storage directory (survives updates/reinstalls, never wiped when the extension package itself is replaced) -- see M15B: neither the model nor the local-inference runtime ships inside the VSIX, so both are managed here instead of relative to the (read-only, post-install) extension install directory. */
+let globalStorageDir: string | undefined;
 /** In-memory only, per M12B's own scope -- never persisted, and reset on every extension activation. */
 const redirectLifecycle = new RedirectLifecycleManager();
 
-/** The packaged local model's fixed location relative to the extension itself -- see M9A/CLAUDE.md: semantic analysis only ever uses this local, gitignored asset, never a cloud LLM. */
+/** M15B: the managed model lives in Drift's own global storage, downloaded on explicit user request via "Drift: Setup Local Model" -- never bundled inside the VSIX and never relative to the extension's own (read-only after packaging) install directory. See M9A/CLAUDE.md: semantic analysis only ever uses this local asset, never a cloud LLM. */
 function resolveModelPath(): string {
-  return path.join(extensionUri!.fsPath, "models", "gemma-3-4b-it-IQ4_XS.gguf");
+  return getManagedModelPath(globalStorageDir!);
+}
+
+/** M15B: the managed llama.cpp runtime, downloaded alongside the model -- never assumes a Homebrew (or any other) system install of llama-server. */
+function resolveLlamaServerPath(): string {
+  return getManagedLlamaServerPath(globalStorageDir!);
 }
 
 /** The same "normalize -> buildTrajectory -> attributeUsageToTrajectory" pipeline used everywhere else in this codebase, factored here since both Analyze Session and Inspect Session need a fresh, exact-order trajectory for a session. Pure -- reads storage, never writes it. */
@@ -105,6 +114,35 @@ export async function initializeRuntimeStatus(
   return started;
 }
 
+/** True when this workspace folder's own .claude/settings.local.json already has a Drift command hook installed -- read-only, matching hookInstaller.ts's own command-shape convention (a SessionStart hook whose command references hookBridge.js). */
+function isHooksConfigured(workspaceFolder: vscode.WorkspaceFolder): boolean {
+  const settingsPath = path.join(workspaceFolder.uri.fsPath, ".claude", "settings.local.json");
+  if (!fs.existsSync(settingsPath)) return false;
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const sessionStartGroups = settings?.hooks?.SessionStart;
+    if (!Array.isArray(sessionStartGroups)) return false;
+    return sessionStartGroups.some(
+      (group: { hooks?: unknown }) => Array.isArray(group?.hooks) && (group.hooks as { command?: unknown }[]).some((h) => typeof h?.command === "string" && h.command.includes("hookBridge.js"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** M16: refreshes the sidebar's two setup-status rows -- called once after activation and again after either setup command runs, so the sidebar always reflects real, current state rather than a stale first read. */
+async function refreshSetupStatus(): Promise<void> {
+  if (!sidebarProvider) return;
+
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  sidebarProvider.setHooksStatus(workspaceFolder ? (isHooksConfigured(workspaceFolder) ? "ready" : "not_ready") : "unknown", workspaceFolder !== undefined);
+
+  if (globalStorageDir) {
+    const [modelStatus, runtimeStatus] = await Promise.all([checkModelStatus(globalStorageDir), Promise.resolve(checkLlamaRuntimeStatus(globalStorageDir))]);
+    sidebarProvider.setModelStatus(modelStatus.ready && runtimeStatus.ready ? "ready" : "not_ready");
+  }
+}
+
 /**
  * Configures Claude Code hooks for the first workspace folder, pointing them
  * at the currently running Drift runtime's port.
@@ -125,6 +163,7 @@ export async function runInstallClaudeHooksCommand(): Promise<void> {
   const bridgeScriptPath = path.join(extensionUri!.fsPath, "out", "src", "hookBridge.js");
   installClaudeHooks(settingsPath, runtime.port, bridgeScriptPath);
   vscode.window.showInformationMessage("Drift: Claude Code hooks configured for this workspace.");
+  await refreshSetupStatus();
 }
 
 /** Shared by both Analyze Session and Inspect Session -- both start from "which stored Claude Code session?" and nothing else. */
@@ -148,12 +187,95 @@ const defaultSessionPickerDeps: SessionPickerDeps = {
 
 export interface AnalyzeSessionDeps extends SessionPickerDeps {
   createRuntime: () => LocalModelRuntime;
+  /**
+   * M15B: verifies the managed model/runtime are actually installed before
+   * createRuntime() is ever called. Optional -- a caller supplying its own
+   * stub createRuntime() (as the existing test suite does throughout, to
+   * exercise analysis without needing the real multi-gigabyte model) has
+   * nothing real to check and simply omits this, so the real installation
+   * gate only ever applies to the genuine, production runtime path below.
+   */
+  checkModelReady?: () => Promise<{ ready: boolean; message: string }>;
 }
 
 const defaultAnalyzeSessionDeps: AnalyzeSessionDeps = {
   ...defaultSessionPickerDeps,
-  createRuntime: () => createLocalModelRuntime({ modelPath: resolveModelPath(), timeoutMs: 60000 }),
+  createRuntime: () => createLocalModelRuntime({ modelPath: resolveModelPath(), llamaServerPath: resolveLlamaServerPath(), timeoutMs: 60000 }),
+  checkModelReady: async () => {
+    const [modelStatus, runtimeStatus] = await Promise.all([checkModelStatus(globalStorageDir!), Promise.resolve(checkLlamaRuntimeStatus(globalStorageDir!))]);
+    return {
+      ready: modelStatus.ready && runtimeStatus.ready,
+      message: 'Drift: the local model/runtime are not installed yet. Run "Drift: Setup Local Model" first.',
+    };
+  },
 };
+
+/**
+ * M15B: the explicit, user-triggered download action for Drift's two
+ * managed local-inference assets (Gemma GGUF model, llama.cpp runtime).
+ * Never invoked automatically -- not on activation, not from
+ * runAnalyzeSessionCommand's own pre-check, which only ever tells the user
+ * to run this command rather than triggering a download itself. Already-
+ * installed, checksum-valid assets are detected and skipped, never
+ * redownloaded.
+ */
+export interface SetupLocalModelDeps {
+  globalStorageDir: string;
+  withProgress: (title: string, task: (report: (message: string) => void) => Promise<void>) => Promise<void>;
+  showInfo: (message: string) => void;
+  showError: (message: string) => void;
+}
+
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return "?";
+  return `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
+}
+
+export async function runSetupLocalModelCommand(deps: SetupLocalModelDeps): Promise<void> {
+  const [modelStatus, runtimeStatus] = await Promise.all([checkModelStatus(deps.globalStorageDir), Promise.resolve(checkLlamaRuntimeStatus(deps.globalStorageDir))]);
+
+  if (modelStatus.ready && runtimeStatus.ready) {
+    deps.showInfo("Drift: local model and runtime are already installed.");
+    return;
+  }
+
+  try {
+    await deps.withProgress("Drift: setting up local model", async (report) => {
+      if (!runtimeStatus.ready) {
+        report("Downloading local inference runtime...");
+        const result = await installLlamaRuntime(deps.globalStorageDir, (p) => report(`Downloading runtime... ${formatBytes(p.receivedBytes)} / ${formatBytes(p.totalBytes)}`));
+        if (!result.success) throw new Error(`runtime setup failed: ${result.error}`);
+      }
+      if (!modelStatus.ready) {
+        report("Downloading local model (this is a large file, please be patient)...");
+        const result = await downloadModel(deps.globalStorageDir, (p) => report(`Downloading model... ${formatBytes(p.receivedBytes)} / ${formatBytes(p.totalBytes)}`));
+        if (!result.success) throw new Error(`model setup failed: ${result.error}`);
+      }
+    });
+  } catch (error) {
+    deps.showError(`Drift: local model setup failed -- ${error instanceof Error ? error.message : String(error)}`);
+    await refreshSetupStatus();
+    return;
+  }
+
+  deps.showInfo("Drift: local model setup complete.");
+  await refreshSetupStatus();
+}
+
+const defaultSetupLocalModelDeps: () => SetupLocalModelDeps = () => ({
+  globalStorageDir: globalStorageDir!,
+  withProgress: async (title, task) => {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: false }, async (progress) => {
+      await task((message) => progress.report({ message }));
+    });
+  },
+  showInfo: (message) => {
+    vscode.window.showInformationMessage(message);
+  },
+  showError: (message) => {
+    vscode.window.showErrorMessage(message);
+  },
+});
 
 export type InspectSessionDeps = SessionPickerDeps;
 const defaultInspectSessionDeps: InspectSessionDeps = defaultSessionPickerDeps;
@@ -192,6 +314,19 @@ export async function runAnalyzeSessionCommand(deps: AnalyzeSessionDeps = defaul
   }
 
   const trajectoryUsage = buildTrajectoryUsageFor(sessionId, sessionData);
+
+  // M15B: the model/runtime are managed, downloaded assets, never bundled
+  // and never auto-downloaded -- give a clear, actionable message instead
+  // of letting analysis fail with a raw "no such file" from a missing
+  // model or a spawn failure from a missing llama-server binary. Only the
+  // real production deps provide this check (see AnalyzeSessionDeps).
+  if (deps.checkModelReady) {
+    const status = await deps.checkModelReady();
+    if (!status.ready) {
+      vscode.window.showErrorMessage(status.message);
+      return undefined;
+    }
+  }
 
   const modelRuntime = deps.createRuntime();
   let result: SessionAnalysis;
@@ -416,6 +551,7 @@ export async function runPrepareRedirectCommand(
 
 export async function activate(context: vscode.ExtensionContext) {
   extensionUri = context.extensionUri;
+  globalStorageDir = context.globalStorageUri.fsPath;
   const provider = new DriftSidebarProvider();
   sidebarProvider = provider;
   const treeView = vscode.window.createTreeView("drift.sidebar", {
@@ -454,6 +590,9 @@ export async function activate(context: vscode.ExtensionContext) {
   const analyzeSessionCommand = vscode.commands.registerCommand("drift.analyzeSession", () => runAnalyzeSessionCommand());
   context.subscriptions.push(analyzeSessionCommand);
 
+  const setupLocalModelCommand = vscode.commands.registerCommand("drift.setupLocalModel", () => runSetupLocalModelCommand(defaultSetupLocalModelDeps()));
+  context.subscriptions.push(setupLocalModelCommand);
+
   const showFindingStepsCommand = vscode.commands.registerCommand(SHOW_FINDING_STEPS_COMMAND, runShowFindingStepsCommand);
   context.subscriptions.push(showFindingStepsCommand);
 
@@ -479,6 +618,11 @@ export async function activate(context: vscode.ExtensionContext) {
   storage = openStorage(dbPath);
 
   runtime = await initializeRuntimeStatus(provider, storage);
+
+  // Fire-and-forget: the model/runtime checks below hash a multi-gigabyte
+  // file and stat a binary, so activation must not block on them -- the
+  // sidebar starts at "Checking..." and updates in place once this resolves.
+  void refreshSetupStatus();
 
   return {
     provider,

@@ -405,7 +405,10 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
     await vscode.commands.executeCommand("workbench.view.extension.drift");
 
     const children = exports.provider.getChildren();
-    assert.strictEqual(children.length, 1);
+    // M16: the sidebar now also surfaces model/runtime and Claude-hooks
+    // setup status (see driftSidebarProvider.ts) -- the runtime row remains
+    // first, but the row count grew from 1 to 3.
+    assert.strictEqual(children.length, 3);
     assert.strictEqual(children[0].label, "Runtime: Online");
   });
 
