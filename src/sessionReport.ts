@@ -126,7 +126,8 @@ function buildSummary(trajectoryUsage: TrajectoryUsage, rawEventsById: Map<numbe
   };
 }
 
-function buildOutcome(trajectoryUsage: TrajectoryUsage): SessionOutcome {
+/** Exported for interventionMeasurement.ts (M13A), which needs the exact same objective outcome logic for its own, unrelated record shape. */
+export function buildOutcome(trajectoryUsage: TrajectoryUsage): SessionOutcome {
   const steps = trajectoryUsage.steps;
   let finalToolCall: SessionOutcome["finalToolCall"];
 
