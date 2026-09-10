@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { DriftSidebarProvider } from "./driftSidebarProvider";
+import { DriftDashboardViewProvider } from "./driftDashboardViewProvider";
 import { DriftFindingsProvider, SHOW_FINDING_STEPS_COMMAND, buildStepDetailText } from "./findingsViewProvider";
 import { DriftTrajectoryInspectorProvider, InspectorNode, OPEN_INSPECTOR_AT_STEP_COMMAND } from "./trajectoryInspectorProvider";
 import { DriftSessionReportProvider } from "./sessionReportProvider";
@@ -554,10 +555,12 @@ export async function activate(context: vscode.ExtensionContext) {
   globalStorageDir = context.globalStorageUri.fsPath;
   const provider = new DriftSidebarProvider();
   sidebarProvider = provider;
-  const treeView = vscode.window.createTreeView("drift.sidebar", {
-    treeDataProvider: provider,
-  });
-  context.subscriptions.push(treeView);
+  // M17: "drift.sidebar" is now a polished webview dashboard (header, live
+  // status pills, action buttons) instead of a plain TreeView -- DriftSidebarProvider
+  // stays the single source of truth for status; the dashboard only reads it.
+  const dashboardProvider = new DriftDashboardViewProvider(context.extensionUri, provider);
+  const dashboardRegistration = vscode.window.registerWebviewViewProvider("drift.sidebar", dashboardProvider);
+  context.subscriptions.push(dashboardRegistration);
 
   const findingsViewProvider = new DriftFindingsProvider();
   findingsProvider = findingsViewProvider;
@@ -626,7 +629,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   return {
     provider,
-    treeView,
+    dashboardProvider,
     findingsProvider: findingsViewProvider,
     findingsTreeView,
     inspectorProvider: trajectoryInspectorProvider,

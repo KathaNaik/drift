@@ -42,6 +42,15 @@ export class DriftSidebarProvider implements vscode.TreeDataProvider<vscode.Tree
     this._onDidChangeTreeData.fire();
   }
 
+  getModelStatus(): SetupStepStatus {
+    return this.modelStatus;
+  }
+
+  /** M17: exposes the same two fields setHooksStatus takes, so a non-TreeView consumer (the dashboard webview) can read this state without depending on the tree-rendered labels in hooksItem(). */
+  getHooksStatus(): { status: SetupStepStatus; hasWorkspaceFolder: boolean } {
+    return { status: this.hooksStatus, hasWorkspaceFolder: this.hasWorkspaceFolder };
+  }
+
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
     return element;
   }

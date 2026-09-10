@@ -43,7 +43,8 @@
       "drift": [
         {
           "id": "drift.sidebar",
-          "name": "Drift"
+          "name": "Drift",
+          "type": "webview"
         },
         {
           "id": "drift.findings",
