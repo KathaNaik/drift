@@ -47,7 +47,7 @@ function stepNodes(nodes: InspectorNode[]): Extract<InspectorNode, { kind: "step
 
 suite("Drift Trajectory Inspector (M11B)", () => {
   test("contributes the drift.inspector view and drift.inspectSession command", () => {
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const views = ext.packageJSON.contributes.views.drift;
     assert.ok(views.some((v: { id: string }) => v.id === "drift.inspector"), "drift.inspector view not contributed");
     const commands: { command: string }[] = ext.packageJSON.contributes.commands;
@@ -56,7 +56,7 @@ suite("Drift Trajectory Inspector (M11B)", () => {
 
   test("a real stored session opens in exact trajectory order, with understandable invocation/result links, usage on the right step, and subagent identity shown", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -115,7 +115,7 @@ suite("Drift Trajectory Inspector (M11B)", () => {
 
   test("findings highlight exactly the real M10B stepIndexes -- no more, no less", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const inspector: DriftTrajectoryInspectorProvider = exports.inspectorProvider;
@@ -169,7 +169,7 @@ suite("Drift Trajectory Inspector (M11B)", () => {
 
   test("clicking a finding in the Findings view navigates the inspector to the correct trajectory location", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const findings: DriftFindingsProvider = exports.findingsProvider;
@@ -207,7 +207,7 @@ suite("Drift Trajectory Inspector (M11B)", () => {
 
   test("inspecting a session with no analysis yet still renders its raw trajectory, with zero Gemma calls", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const inspector: DriftTrajectoryInspectorProvider = exports.inspectorProvider;
@@ -233,7 +233,7 @@ suite("Drift Trajectory Inspector (M11B)", () => {
 
   test("repeated Inspect Session for the same session does not duplicate rows or mutate storage", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;

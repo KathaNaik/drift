@@ -64,7 +64,7 @@ function allFieldLabels(provider: DriftSessionReportProvider, nodes: any[]): str
 
 suite("Drift Session Report (M11C)", () => {
   test("contributes the drift.report view and drift.viewSessionReport command", () => {
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const views = ext.packageJSON.contributes.views.drift;
     assert.ok(views.some((v: { id: string }) => v.id === "drift.report"), "drift.report view not contributed");
     const commands: { command: string }[] = ext.packageJSON.contributes.commands;
@@ -82,7 +82,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("an analyzed real session produces a complete report: usage matches M7C exactly, Finding/Redirect counts match M10B exactly, step indexes are correct", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -133,7 +133,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("missing usage fields remain absent, not zero-filled, in the rendered report", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const reportProvider: DriftSessionReportProvider = exports.reportProvider;
@@ -155,7 +155,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("a session with no analysis renders safely and states that no analysis has been run", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const reportProvider: DriftSessionReportProvider = exports.reportProvider;
@@ -179,7 +179,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("opening the report causes zero Gemma calls", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
@@ -195,7 +195,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("the report never claims saved or avoided compute, and uses 'detected' terminology", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const reportProvider: DriftSessionReportProvider = exports.reportProvider;
@@ -219,7 +219,7 @@ suite("Drift Session Report (M11C)", () => {
 
   test("repeated report generation replaces rather than accumulates, and never mutates storage", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -250,7 +250,7 @@ suite("Drift Session Report (M11C)", () => {
       if (!MODEL_PRESENT) this.skip();
       this.timeout(60000);
 
-      const ext = vscode.extensions.getExtension("drift.drift")!;
+      const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
       const exports = await ext.activate();
       const runtime = exports.getRuntime();
       const reportProvider: DriftSessionReportProvider = exports.reportProvider;

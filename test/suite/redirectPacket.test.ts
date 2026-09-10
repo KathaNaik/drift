@@ -42,7 +42,7 @@ async function postGenuineStalledLoop(port: number, sessionId: string, occurrenc
 
 suite("Drift Prepare Redirect (M12A)", () => {
   test("contributes the drift.prepareRedirect command, scoped to redirect_candidate rows only", () => {
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const commands: { command: string }[] = ext.packageJSON.contributes.commands;
     assert.ok(commands.some((c) => c.command === "drift.prepareRedirect"), "drift.prepareRedirect command not contributed");
 
@@ -55,7 +55,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("a real redirect_candidate analysis produces a grounded packet, shown for Approve/Cancel -- Approve records approval with no side effects", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -98,7 +98,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("Cancel changes nothing and is recorded distinctly from Approve", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
     const storage = exports.getStorage()!;
@@ -121,7 +121,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("Finding and Observe analyses cannot produce a packet through the real command -- rejected before any UI is shown", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
@@ -149,7 +149,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("a stale analysis for a different session is rejected, never applied", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
@@ -183,7 +183,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("preparing/viewing a redirect packet invokes zero Gemma calls", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 
@@ -203,7 +203,7 @@ suite("Drift Prepare Redirect (M12A)", () => {
 
   test("no Claude intervention occurs: no hook installer or Claude config write happens as part of preparing/approving a redirect", async function () {
     this.timeout(30000);
-    const ext = vscode.extensions.getExtension("drift.drift")!;
+    const ext = vscode.extensions.getExtension("drift.drift-agent-monitor")!;
     const exports = await ext.activate();
     const runtime = exports.getRuntime();
 

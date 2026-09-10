@@ -1,8 +1,8 @@
 {
-  "name": "drift",
+  "name": "drift-agent-monitor",
   "displayName": "Drift",
   "description": "Monitors Claude Code sessions locally and flags low-value compute -- repeated retries, stale rereads, redundant subagent work -- using a fully local model. No cloud calls, no session data leaves your machine.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "drift",
   "icon": "resources/drift-icon.png",
   "license": "MIT",
