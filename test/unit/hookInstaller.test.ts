@@ -5,7 +5,8 @@ import * as path from "path";
 import { installClaudeHooks, DRIFT_HOOK_EVENTS } from "../../src/hookInstaller";
 
 const BRIDGE_SCRIPT_PATH = "/fake/extension/out/src/hookBridge.js";
-const HTTP_EVENTS = DRIFT_HOOK_EVENTS.filter((e) => e !== "SessionStart");
+const COMMAND_EVENTS = ["SessionStart", "UserPromptSubmit"];
+const HTTP_EVENTS = DRIFT_HOOK_EVENTS.filter((e) => !COMMAND_EVENTS.includes(e));
 
 function tempSettingsPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "drift-hook-installer-test-"));
@@ -221,6 +222,110 @@ suite("hookInstaller (M4B)", () => {
     const groups = settings.hooks.SessionStart;
     assert.strictEqual(groups.length, 2);
     assert.deepStrictEqual(groups[0], { matcher: "startup", hooks: [{ type: "command", command: "echo welcome" }] });
+    assert.strictEqual(groups[1].hooks[0].type, "command");
+    assert.ok(groups[1].hooks[0].command.includes(BRIDGE_SCRIPT_PATH));
+  });
+
+  test("UserPromptSubmit is configured as a command hook, not http (M12B.1)", () => {
+    const settingsPath = tempSettingsPath();
+    const settings = installClaudeHooks(settingsPath, 4321, BRIDGE_SCRIPT_PATH) as any;
+
+    const groups = settings.hooks.UserPromptSubmit;
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].hooks.length, 1);
+    assert.strictEqual(groups[0].hooks[0].type, "command");
+    assert.strictEqual(groups[0].hooks[0].url, undefined);
+    assert.ok(groups[0].hooks[0].command.includes(BRIDGE_SCRIPT_PATH));
+    assert.ok(groups[0].hooks[0].command.includes("4321"));
+  });
+
+  test("re-running setup updates the UserPromptSubmit bridge command when the port changes, without duplicating it (M12B.1)", () => {
+    const settingsPath = tempSettingsPath();
+    installClaudeHooks(settingsPath, 4000, BRIDGE_SCRIPT_PATH);
+    const settings = installClaudeHooks(settingsPath, 9999, BRIDGE_SCRIPT_PATH) as any;
+
+    const groups = settings.hooks.UserPromptSubmit;
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].hooks.length, 1);
+    assert.ok(groups[0].hooks[0].command.includes("9999"));
+    assert.ok(!groups[0].hooks[0].command.includes(" 4000"));
+  });
+
+  test("migrates a stale pre-M12B.1 UserPromptSubmit HTTP hook to the command bridge, without duplicating it", () => {
+    const settingsPath = tempSettingsPath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [{ matcher: "*", hooks: [{ type: "http", url: "http://127.0.0.1:4000/hooks/claude" }] }],
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const settings = installClaudeHooks(settingsPath, 9999, BRIDGE_SCRIPT_PATH) as any;
+
+    const groups = settings.hooks.UserPromptSubmit;
+    assert.strictEqual(groups.length, 1, "stale http entry should be replaced, not kept alongside the new one");
+    assert.strictEqual(groups[0].hooks.length, 1);
+    assert.strictEqual(groups[0].hooks[0].type, "command");
+    assert.strictEqual(groups[0].hooks[0].url, undefined);
+    assert.ok(groups[0].hooks[0].command.includes(BRIDGE_SCRIPT_PATH));
+    assert.ok(groups[0].hooks[0].command.includes("9999"));
+    assert.ok(!groups[0].hooks[0].command.includes("4000"));
+  });
+
+  test("migration is idempotent: running the migrated setup repeatedly never accumulates duplicate UserPromptSubmit entries", () => {
+    const settingsPath = tempSettingsPath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [{ matcher: "*", hooks: [{ type: "http", url: "http://127.0.0.1:4000/hooks/claude" }] }],
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    installClaudeHooks(settingsPath, 9999, BRIDGE_SCRIPT_PATH);
+    installClaudeHooks(settingsPath, 9999, BRIDGE_SCRIPT_PATH);
+    const settings = installClaudeHooks(settingsPath, 9999, BRIDGE_SCRIPT_PATH) as any;
+
+    const groups = settings.hooks.UserPromptSubmit;
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].hooks.length, 1);
+    assert.strictEqual(groups[0].hooks[0].type, "command");
+  });
+
+  test("preserves a user's own UserPromptSubmit hooks alongside Drift's bridge command", () => {
+    const settingsPath = tempSettingsPath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [{ matcher: "*", hooks: [{ type: "command", command: "echo custom-prompt-hook" }] }],
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const settings = installClaudeHooks(settingsPath, 4000, BRIDGE_SCRIPT_PATH) as any;
+
+    const groups = settings.hooks.UserPromptSubmit;
+    assert.strictEqual(groups.length, 2);
+    assert.deepStrictEqual(groups[0], { matcher: "*", hooks: [{ type: "command", command: "echo custom-prompt-hook" }] });
     assert.strictEqual(groups[1].hooks[0].type, "command");
     assert.ok(groups[1].hooks[0].command.includes(BRIDGE_SCRIPT_PATH));
   });

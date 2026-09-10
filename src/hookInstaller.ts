@@ -2,7 +2,6 @@ import * as fs from "fs";
 import * as path from "path";
 
 const HTTP_TRANSPORT_EVENTS = [
-  "UserPromptSubmit",
   "PreToolUse",
   "PostToolUse",
   "PostToolUseFailure",
@@ -16,9 +15,14 @@ const HTTP_TRANSPORT_EVENTS = [
   "SessionEnd",
 ] as const;
 
-// Claude Code does not support the "http" hook transport for these events;
-// they're delivered via the command bridge (src/hookBridge.ts) instead.
-const COMMAND_TRANSPORT_EVENTS = ["SessionStart"] as const;
+// Claude Code does not support the "http" hook transport for these events
+// (SessionStart), or does not honor an http hook's JSON response the way it
+// honors a command hook's stdout (UserPromptSubmit -- confirmed live against
+// real Claude Code CLI in M12B-LIVE: an http UserPromptSubmit hook's
+// hookSpecificOutput.additionalContext was never consumed, despite matching
+// Claude Code's own documented schema). Both are delivered via the command
+// bridge (src/hookBridge.ts) instead.
+const COMMAND_TRANSPORT_EVENTS = ["SessionStart", "UserPromptSubmit"] as const;
 
 export const DRIFT_HOOK_EVENTS = [...HTTP_TRANSPORT_EVENTS, ...COMMAND_TRANSPORT_EVENTS] as const;
 

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
-import { startRuntime, checkHealth, DriftRuntime } from "../../src/runtime";
+import { startRuntime, checkHealth, DriftRuntime, RedirectInjectionHook } from "../../src/runtime";
 import { openStorage, DriftStorage } from "../../src/storage";
 
 function openTempStorage(): DriftStorage {
@@ -499,5 +499,149 @@ suite("runtime OTLP telemetry ingestion (M7A)", () => {
   test("a batch with no recognizable Claude Code telemetry is a harmless no-op", async () => {
     const { statusCode } = await postJson(runtime.port, "/v1/logs", { resourceLogs: [] });
     assert.strictEqual(statusCode, 200);
+  });
+});
+
+suite("runtime UserPromptSubmit redirect injection (M12B)", () => {
+  function fakeInjectionHook(overrides: Partial<RedirectInjectionHook> = {}): RedirectInjectionHook & { getCalls: string[]; consumedCalls: string[] } {
+    const getCalls: string[] = [];
+    const consumedCalls: string[] = [];
+    return {
+      getCalls,
+      consumedCalls,
+      getInjectableContext: (sessionId) => {
+        getCalls.push(sessionId);
+        return overrides.getInjectableContext ? overrides.getInjectableContext(sessionId) : undefined;
+      },
+      markConsumed: (sessionId) => {
+        consumedCalls.push(sessionId);
+        overrides.markConsumed?.(sessionId);
+      },
+    };
+  }
+
+  test("no injection hook provided: UserPromptSubmit still gets the plain ack, unaffected", async () => {
+    const storage = openTempStorage();
+    const runtime = await startRuntime(storage);
+    try {
+      const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s1", hook_event_name: "UserPromptSubmit", prompt: "hi" });
+      assert.strictEqual(statusCode, 200);
+      assert.deepStrictEqual(JSON.parse(body), { status: "ok" });
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("injection hook returns undefined (nothing eligible): plain ack, markConsumed never called", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook();
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s2", hook_event_name: "UserPromptSubmit", prompt: "hi" });
+      assert.strictEqual(statusCode, 200);
+      assert.deepStrictEqual(JSON.parse(body), { status: "ok" });
+      assert.deepStrictEqual(hook.getCalls, ["s2"]);
+      assert.deepStrictEqual(hook.consumedCalls, []);
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("injection hook returns context: response carries the exact real Claude Code hookSpecificOutput.additionalContext shape, and markConsumed is called for the same session", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook({ getInjectableContext: (sessionId) => (sessionId === "s3" ? "DRIFT REDIRECT\n\nCurrent state:\n- x failed" : undefined) });
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s3", hook_event_name: "UserPromptSubmit", prompt: "hi" });
+      assert.strictEqual(statusCode, 200);
+      const parsed = JSON.parse(body);
+      assert.deepStrictEqual(parsed, {
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: ["DRIFT REDIRECT\n\nCurrent state:\n- x failed"] },
+      });
+      assert.deepStrictEqual(hook.consumedCalls, ["s3"]);
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("getInjectableContext throwing falls back to the plain ack -- never corrupts the hook response, and markConsumed is never called", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook({
+      getInjectableContext: () => {
+        throw new Error("boom");
+      },
+    });
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s4", hook_event_name: "UserPromptSubmit", prompt: "hi" });
+      assert.strictEqual(statusCode, 200, "Claude's session must continue normally even when injection lookup fails");
+      assert.deepStrictEqual(JSON.parse(body), { status: "ok" });
+      assert.deepStrictEqual(hook.consumedCalls, [], "a failed lookup must never be marked consumed -- it must remain retryable");
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("markConsumed throwing does not affect the already-sent response or crash the server", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook({
+      getInjectableContext: () => "some guidance",
+      markConsumed: () => {
+        throw new Error("bookkeeping failure");
+      },
+    });
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s5", hook_event_name: "UserPromptSubmit", prompt: "hi" });
+      assert.strictEqual(statusCode, 200);
+      const parsed = JSON.parse(body);
+      assert.deepStrictEqual(parsed.hookSpecificOutput.additionalContext, ["some guidance"]);
+
+      // The server must still be alive and answering after a markConsumed failure.
+      const healthy = await checkHealth(runtime.port);
+      assert.strictEqual(healthy, true);
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("injection is only ever attempted for UserPromptSubmit -- other hook events never call getInjectableContext, even when eligible", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook({ getInjectableContext: () => "should never be used here" });
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      for (const eventName of ["PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop"]) {
+        const { statusCode, body } = await postJson(runtime.port, "/hooks/claude", { session_id: "s6", hook_event_name: eventName });
+        assert.strictEqual(statusCode, 200);
+        assert.deepStrictEqual(JSON.parse(body), { status: "ok" }, `${eventName} must never receive injected context`);
+      }
+      assert.deepStrictEqual(hook.getCalls, [], "getInjectableContext must only ever be called for UserPromptSubmit");
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
+  });
+
+  test("getInjectableContext is called with the exact session_id from the hook payload, isolating sessions from each other", async () => {
+    const storage = openTempStorage();
+    const hook = fakeInjectionHook({ getInjectableContext: (sessionId) => (sessionId === "session-only-one" ? "guidance for one" : undefined) });
+    const runtime = await startRuntime(storage, undefined, hook);
+    try {
+      const other = await postJson(runtime.port, "/hooks/claude", { session_id: "session-other", hook_event_name: "UserPromptSubmit" });
+      assert.deepStrictEqual(JSON.parse(other.body), { status: "ok" }, "a different session must never receive another session's injection");
+
+      const target = await postJson(runtime.port, "/hooks/claude", { session_id: "session-only-one", hook_event_name: "UserPromptSubmit" });
+      assert.deepStrictEqual(JSON.parse(target.body).hookSpecificOutput.additionalContext, ["guidance for one"]);
+
+      assert.deepStrictEqual(hook.consumedCalls, ["session-only-one"]);
+    } finally {
+      await runtime.stop();
+      storage.close();
+    }
   });
 });

@@ -181,9 +181,12 @@ suite("Drift extension scaffold (M1 + M2 + M3)", () => {
     for (const eventName of DRIFT_HOOK_EVENTS) {
       const groups = settings.hooks[eventName];
       assert.strictEqual(groups.length, 1);
-      if (eventName === "SessionStart") {
-        // Claude Code does not support the "http" transport for SessionStart;
-        // it's delivered via the command bridge instead (M4B.1).
+      if (eventName === "SessionStart" || eventName === "UserPromptSubmit") {
+        // Claude Code does not support the "http" transport for SessionStart,
+        // and does not honor an http UserPromptSubmit hook's
+        // hookSpecificOutput.additionalContext the way it honors a command
+        // hook's stdout (confirmed live in M12B-LIVE) -- both are delivered
+        // via the command bridge instead (M4B.1, M12B.1).
         assert.strictEqual(groups[0].hooks[0].type, "command");
         assert.ok(groups[0].hooks[0].command.includes(String(runtime.port)));
       } else {

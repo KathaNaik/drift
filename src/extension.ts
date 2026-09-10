@@ -5,7 +5,9 @@ import { DriftFindingsProvider, SHOW_FINDING_STEPS_COMMAND, buildStepDetailText 
 import { DriftTrajectoryInspectorProvider, InspectorNode, OPEN_INSPECTOR_AT_STEP_COMMAND } from "./trajectoryInspectorProvider";
 import { DriftSessionReportProvider } from "./sessionReportProvider";
 import { buildSessionReport } from "./sessionReport";
-import { startRuntime, checkHealth, DriftRuntime } from "./runtime";
+import { generateRedirectPacket, formatRedirectPacketText, formatInjectedRedirectContext, RedirectPacket } from "./redirectPacket";
+import { RedirectLifecycleManager } from "./redirectLifecycle";
+import { startRuntime, checkHealth, DriftRuntime, RedirectInjectionHook } from "./runtime";
 import { openStorage, DriftStorage, DriftSession, DriftRawEvent, DriftSessionWithEvents } from "./storage";
 import { installClaudeHooks } from "./hookInstaller";
 import { exportSessionOnEnd } from "./sessionExportPipeline";
@@ -31,11 +33,32 @@ function currentOtlpConfig(): OtlpExportConfig {
   };
 }
 
+/**
+ * The M12B injection boundary wired into the running runtime: on every
+ * UserPromptSubmit hook, the runtime asks whether Drift has an approved,
+ * still-current redirect for that exact session (see
+ * RedirectLifecycleManager.getInjectablePacket) and, if so, formats it into
+ * the restricted context-only block (formatInjectedRedirectContext -- never
+ * reasonCodes, usage, or raw evidence). Marking it consumed only happens
+ * after runtime.ts confirms the response was actually sent.
+ */
+const redirectInjectionHook: RedirectInjectionHook = {
+  getInjectableContext: (sessionId) => {
+    const packet = redirectLifecycle.getInjectablePacket(sessionId, findingsProvider?.getCurrentAnalysis());
+    return packet ? formatInjectedRedirectContext(packet) : undefined;
+  },
+  markConsumed: (sessionId) => redirectLifecycle.markConsumed(sessionId),
+};
+
 const defaultRuntimeStartDeps: RuntimeStartDeps = {
   startRuntime: (storage) =>
-    startRuntime(storage, async (sessionId) => {
-      await exportSessionOnEnd(sessionId, storage, currentOtlpConfig());
-    }),
+    startRuntime(
+      storage,
+      async (sessionId) => {
+        await exportSessionOnEnd(sessionId, storage, currentOtlpConfig());
+      },
+      redirectInjectionHook
+    ),
   checkHealth,
 };
 
@@ -47,6 +70,8 @@ let inspectorTreeView: vscode.TreeView<InspectorNode> | undefined;
 let reportProvider: DriftSessionReportProvider | undefined;
 let storage: DriftStorage | undefined;
 let extensionUri: vscode.Uri | undefined;
+/** In-memory only, per M12B's own scope -- never persisted, and reset on every extension activation. */
+const redirectLifecycle = new RedirectLifecycleManager();
 
 /** The packaged local model's fixed location relative to the extension itself -- see M9A/CLAUDE.md: semantic analysis only ever uses this local, gitignored asset, never a cloud LLM. */
 function resolveModelPath(): string {
@@ -309,6 +334,86 @@ export async function runViewSessionReportCommand(deps: ViewSessionReportDeps = 
   await vscode.commands.executeCommand("drift.report.focus");
 }
 
+export interface RedirectApprovalDeps {
+  /** Shows the packet for review and returns the developer's explicit choice. Never called for anything but a successfully generated packet. */
+  showPacketAndConfirm: (packetText: string) => Promise<"approved" | "cancelled">;
+}
+
+const defaultRedirectApprovalDeps: RedirectApprovalDeps = {
+  showPacketAndConfirm: async (packetText) => {
+    const doc = await vscode.workspace.openTextDocument({ content: packetText, language: "plaintext" });
+    await vscode.window.showTextDocument(doc, { preview: true });
+    const choice = await vscode.window.showInformationMessage(
+      "Drift: review the redirect packet, then Approve or Cancel. Nothing is sent to Claude yet either way.",
+      "Approve",
+      "Cancel"
+    );
+    return choice === "Approve" ? "approved" : "cancelled";
+  },
+};
+
+export interface RedirectPreparationResult {
+  packet: RedirectPacket | undefined;
+  /** "rejected" means generateRedirectPacket itself refused (wrong state, or a stale/mismatched session) -- the developer was never shown a packet to decide on. */
+  decision: "approved" | "cancelled" | "rejected";
+  error: string | undefined;
+}
+
+/**
+ * "Prepare Redirect" (M12A): generates a redirect packet for one
+ * redirect_candidate analysis window and shows it for explicit Approve/
+ * Cancel review. This never touches the local model (packet generation is
+ * pure and read-only) and, whichever way the developer decides, nothing is
+ * sent to Claude, no hook is called, and no configuration is changed --
+ * Cancel and Approve are both no-ops beyond the informational message shown
+ * afterward. Rejects outright (never fabricates a packet) for any window
+ * that is not redirect_candidate, or whose session doesn't match `sessionId`.
+ */
+export async function runPrepareRedirectCommand(
+  sessionId: string,
+  window: SessionAnalysisWindow,
+  deps: RedirectApprovalDeps = defaultRedirectApprovalDeps
+): Promise<RedirectPreparationResult> {
+  if (!storage) {
+    vscode.window.showErrorMessage("Drift: storage is not open yet.");
+    return { packet: undefined, decision: "rejected", error: "storage is not open yet" };
+  }
+
+  const sessionData = storage.getSession(sessionId);
+  if (!sessionData) {
+    vscode.window.showErrorMessage(`Drift: session ${sessionId} could not be loaded.`);
+    return { packet: undefined, decision: "rejected", error: `session ${sessionId} could not be loaded` };
+  }
+
+  const trajectoryUsage = buildTrajectoryUsageFor(sessionId, sessionData);
+  const result = generateRedirectPacket(sessionId, window, trajectoryUsage);
+  if (!result.success || !result.packet) {
+    vscode.window.showErrorMessage(`Drift: cannot prepare a redirect for this analysis (${result.error}).`);
+    return { packet: undefined, decision: "rejected", error: result.error };
+  }
+
+  // Bind the packet to the exact analysis it came from (M12B session
+  // binding) -- if the Findings view's current analysis doesn't match this
+  // session, there's nothing valid to bind to, so refuse before ever
+  // showing the developer anything to approve.
+  const currentAnalysis = findingsProvider?.getCurrentAnalysis();
+  if (!currentAnalysis || currentAnalysis.sessionId !== sessionId) {
+    vscode.window.showErrorMessage("Drift: cannot prepare a redirect -- no current analysis is bound to this session.");
+    return { packet: undefined, decision: "rejected", error: "no current analysis bound to this session" };
+  }
+  redirectLifecycle.prepare(result.packet, currentAnalysis);
+
+  const decision = await deps.showPacketAndConfirm(formatRedirectPacketText(result.packet));
+  if (decision === "approved") {
+    redirectLifecycle.approve(sessionId);
+    vscode.window.showInformationMessage("Drift: redirect packet approved. It will be delivered as guidance on this session's next prompt -- nothing has been sent to Claude yet.");
+  } else {
+    redirectLifecycle.cancel(sessionId);
+    vscode.window.showInformationMessage("Drift: redirect preparation cancelled. Nothing changed.");
+  }
+  return { packet: result.packet, decision, error: undefined };
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   extensionUri = context.extensionUri;
   const provider = new DriftSidebarProvider();
@@ -361,6 +466,15 @@ export async function activate(context: vscode.ExtensionContext) {
   const viewSessionReportCommand = vscode.commands.registerCommand("drift.viewSessionReport", () => runViewSessionReportCommand());
   context.subscriptions.push(viewSessionReportCommand);
 
+  // Invoked from the Findings view's context menu (see package.json's
+  // view/item/context contribution, scoped to redirect_candidate rows only)
+  // -- VS Code passes the exact tree node DriftFindingsProvider returned,
+  // which structurally carries {sessionId, window}.
+  const prepareRedirectCommand = vscode.commands.registerCommand("drift.prepareRedirect", (node: { sessionId: string; window: SessionAnalysisWindow }) =>
+    runPrepareRedirectCommand(node.sessionId, node.window)
+  );
+  context.subscriptions.push(prepareRedirectCommand);
+
   const dbPath = path.join(context.globalStorageUri.fsPath, "drift.sqlite3");
   storage = openStorage(dbPath);
 
@@ -375,6 +489,7 @@ export async function activate(context: vscode.ExtensionContext) {
     inspectorTreeView: inspectorView,
     reportProvider: sessionReportProvider,
     reportTreeView: reportView,
+    redirectLifecycle,
     getRuntime: () => runtime,
     getStorage: () => storage,
     getStoragePath: () => dbPath,

@@ -16,6 +16,21 @@ export interface DriftRuntime {
  */
 export type SessionEndListener = (sessionId: string) => void | Promise<void>;
 
+/**
+ * The M12B injection boundary. Kept as a plain string-in/string-out
+ * interface (never the redirect packet/lifecycle types themselves) so this
+ * module stays decoupled from Drift's redirect-approval concerns -- it only
+ * ever asks "is there context to inject for this session right now?" and,
+ * once that context has actually been written into a real HTTP response,
+ * is told so it can mark that redirect consumed.
+ */
+export interface RedirectInjectionHook {
+  /** Returns the exact context block to inject into this session's next UserPromptSubmit, or undefined when nothing is currently eligible. Pure lookup -- never mutates anything. */
+  getInjectableContext: (sessionId: string) => string | undefined;
+  /** Called only once the injected response has actually been sent successfully -- never on a fallback/failure path. */
+  markConsumed: (sessionId: string) => void;
+}
+
 interface ClaudeHookPayload {
   session_id: string;
   hook_event_name: string;
@@ -53,11 +68,36 @@ function notifySessionEndListener(sessionId: string, onSessionEnd: SessionEndLis
   }
 }
 
+/**
+ * Builds the response body for a UserPromptSubmit hook, injecting Drift's
+ * approved redirect context via the real, documented
+ * `hookSpecificOutput.additionalContext` field when one is eligible for
+ * this exact session -- the same field Claude Code already honors for this
+ * event, not an invented transport. Any failure while looking up or
+ * formatting the context (redirectInjection is caller-supplied, so
+ * defensively guarded here) falls back to the plain ack: an injection
+ * failure must never corrupt the hook response or block Claude's session.
+ */
+function buildUserPromptSubmitResponse(sessionId: string, redirectInjection: RedirectInjectionHook | undefined): { body: unknown; injected: boolean } {
+  if (!redirectInjection) return { body: { status: "ok" }, injected: false };
+  try {
+    const context = redirectInjection.getInjectableContext(sessionId);
+    if (context === undefined) return { body: { status: "ok" }, injected: false };
+    return {
+      body: { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: [context] } },
+      injected: true,
+    };
+  } catch {
+    return { body: { status: "ok" }, injected: false };
+  }
+}
+
 function handleClaudeHook(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   storage: DriftStorage,
-  onSessionEnd?: SessionEndListener
+  onSessionEnd?: SessionEndListener,
+  redirectInjection?: RedirectInjectionHook
 ): void {
   const chunks: Buffer[] = [];
   req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -79,7 +119,29 @@ function handleClaudeHook(
     storage.ensureSession(body.session_id);
     storage.insertRawEvent(body.session_id, body, receivedAt);
 
-    sendJson(res, 200, { status: "ok" });
+    let responseBody: unknown = { status: "ok" };
+    let injected = false;
+    if (body.hook_event_name === "UserPromptSubmit") {
+      ({ body: responseBody, injected } = buildUserPromptSubmitResponse(body.session_id, redirectInjection));
+    }
+
+    try {
+      sendJson(res, 200, responseBody);
+    } catch {
+      // The response never went out -- nothing was consumed, and Claude's
+      // own retry/continuation behavior for a failed hook call is unaffected
+      // by anything Drift does here.
+      injected = false;
+    }
+
+    if (injected) {
+      try {
+        redirectInjection!.markConsumed(body.session_id);
+      } catch {
+        // Best-effort bookkeeping only; a failure here must never affect the
+        // hook exchange, which has already completed successfully.
+      }
+    }
 
     if (body.hook_event_name === "SessionEnd" && onSessionEnd) {
       notifySessionEndListener(body.session_id, onSessionEnd);
@@ -129,7 +191,7 @@ function handleOtlpTelemetry(
   });
 }
 
-export function startRuntime(storage: DriftStorage, onSessionEnd?: SessionEndListener): Promise<DriftRuntime> {
+export function startRuntime(storage: DriftStorage, onSessionEnd?: SessionEndListener, redirectInjection?: RedirectInjectionHook): Promise<DriftRuntime> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/health") {
@@ -138,7 +200,7 @@ export function startRuntime(storage: DriftStorage, onSessionEnd?: SessionEndLis
       }
 
       if (req.method === "POST" && req.url === "/hooks/claude") {
-        handleClaudeHook(req, res, storage, onSessionEnd);
+        handleClaudeHook(req, res, storage, onSessionEnd, redirectInjection);
         return;
       }
 
